@@ -8,9 +8,6 @@
 		"enabled": true,
 	},
 	"upload_source_maps": true,
-	"limits": {
-		"cpu_ms": 60000,
-	},
 	"vars": {
 		"ENVIRONMENT": "development",
 	},
