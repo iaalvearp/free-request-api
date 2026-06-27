@@ -6,12 +6,13 @@ import { getAvailableProviders } from './providers';
 import { selectProvider, markRateLimited, markError, markSuccess } from './selector';
 import { buildProviderRequest, normalizeResponse } from './transformer';
 import { log, errorResponse, getRetryAfterMs, sleep, calcBackoff } from './utils';
+import { incrementRequestCount, getTodayStats } from './stats';
 
 // Máximo de intentos antes de rendirse (recorre el pool)
 const MAX_ATTEMPTS = 5;
 
 export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		// ── CORS preflight (para VSCode extension) ─────────────
 		if (request.method === 'OPTIONS') {
 			return new Response(null, {
@@ -23,8 +24,22 @@ export default {
 			});
 		}
 
-		// ── Solo aceptamos POST a /v1/chat/completions ──────────
 		const url = new URL(request.url);
+
+		// ── Endpoint de estadísticas ────────────────────────────
+		if (request.method === 'GET' && url.pathname === '/stats') {
+			const authHeader = request.headers.get('Authorization');
+			const expectedAuth = `Bearer ${env.CUSTOM_API_KEY}`;
+			if (!authHeader || authHeader !== expectedAuth) {
+				return errorResponse('Unauthorized', 401, 'unauthorized');
+			}
+			const stats = await getTodayStats(env);
+			return new Response(JSON.stringify(stats, null, 2), {
+				headers: { 'Content-Type': 'application/json' },
+			});
+		}
+
+		// ── Solo aceptamos POST a /v1/chat/completions ──────────
 		if (request.method !== 'POST' || url.pathname !== '/v1/chat/completions') {
 			return errorResponse('Endpoint no encontrado. Usa POST /v1/chat/completions', 404, 'not_found');
 		}
@@ -96,6 +111,7 @@ export default {
 				if (response.ok) {
 					markSuccess(provider.id);
 					log('INFO', `Éxito con ${provider.name}`);
+					ctx.waitUntil(incrementRequestCount(env));
 					const normalized = await normalizeResponse(provider, response);
 					// Añade headers CORS a la respuesta final
 					const finalHeaders = new Headers(normalized.headers);

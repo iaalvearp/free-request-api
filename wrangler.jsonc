@@ -11,4 +11,10 @@
 	"vars": {
 		"ENVIRONMENT": "development",
 	},
+	"kv_namespaces": [
+		{
+			"binding": "PROXY_STATS",
+			"id": "01330c9033254eb6bda3d991f2f5731f",
+		},
+	],
 }

@@ -74,7 +74,8 @@ export interface Env {
 	OPENROUTER_API_KEY: string;
 
 	// OVHcloud (no necesita key, pero la interfaz lo requiere)
-	[key: string]: string;
+	PROXY_STATS: KVNamespace;
+	[key: string]: unknown;
 }
 
 /**
