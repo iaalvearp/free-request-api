@@ -1,41 +1,21 @@
-# Cloudflare Workers
+# free-request-api — AI Proxy Multi-Proveedor
 
-STOP. Your knowledge of Cloudflare Workers APIs and limits may be outdated. Always retrieve current documentation before any Workers, KV, R2, D1, Durable Objects, Queues, Vectorize, AI, or Agents SDK task.
-
-## Docs
+STOP. Tu conocimiento de las APIs de Cloudflare Workers puede estar desactualizado.
+Consulta siempre la documentación oficial antes de cualquier tarea relacionada con Workers.
 
 - https://developers.cloudflare.com/workers/
-- MCP: `https://docs.mcp.cloudflare.com/mcp`
+- Límites: https://developers.cloudflare.com/workers/platform/limits/
 
-For all limits and quotas, retrieve from the product's `/platform/limits/` page. eg. `/workers/platform/limits`
+---
 
-## Commands
+## Qué es este proyecto
 
-| Command | Purpose |
-|---------|---------|
-| `npx wrangler dev` | Local development |
-| `npx wrangler deploy` | Deploy to Cloudflare |
-| `npx wrangler types` | Generate TypeScript types |
+Un proxy HTTP desplegado en Cloudflare Workers que actúa como punto de entrada único
+para múltiples proveedores de LLMs gratuitos. Opencode y VSCode se conectan a este
+proxy como si fuera una API OpenAI estándar. El proxy selecciona automáticamente el
+mejor proveedor disponible, rota entre ellos y hace failover si alguno falla o supera
+su rate limit.
 
-Run `wrangler types` after changing bindings in wrangler.jsonc.
+---
 
-## Node.js Compatibility
-
-https://developers.cloudflare.com/workers/runtime-apis/nodejs/
-
-## Errors
-
-- **Error 1102** (CPU/Memory exceeded): Retrieve limits from `/workers/platform/limits/`
-- **All errors**: https://developers.cloudflare.com/workers/observability/errors/
-
-## Product Docs
-
-Retrieve API references and limits from:
-`/kv/` · `/r2/` · `/d1/` · `/durable-objects/` · `/queues/` · `/vectorize/` · `/workers-ai/` · `/agents/`
-
-## Best Practices (conditional)
-
-If the application uses Durable Objects or Workflows, refer to the relevant best practices:
-
-- Durable Objects: https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/
-- Workflows: https://developers.cloudflare.com/workflows/build/rules-of-workflows/
+## Estructura de archivos
