@@ -112,7 +112,7 @@ export default {
 					markSuccess(provider.id);
 					log('INFO', `Éxito con ${provider.name}`);
 					ctx.waitUntil(incrementRequestCount(env));
-					const normalized = await normalizeResponse(provider, response);
+					const normalized = await normalizeResponse(provider, response, incoming.stream === true);
 					// Añade headers CORS a la respuesta final
 					const finalHeaders = new Headers(normalized.headers);
 					finalHeaders.set('Access-Control-Allow-Origin', '*');

@@ -89,25 +89,71 @@ function buildGoogleRequest(provider: AIProvider, incoming: IncomingRequest, env
  * NVIDIA, Groq, OpenRouter y OVHcloud ya devuelven formato OpenAI,
  * así que esos pasan directo sin transformación.
  */
-export async function normalizeResponse(provider: AIProvider, response: Response): Promise<Response> {
+export async function normalizeResponse(provider: AIProvider, response: Response, stream: boolean = false): Promise<Response> {
 	if (provider.format !== 'google') {
-		// Pasa directo, solo añadimos el header de diagnóstico
+		// Proveedores OpenAI-compatible: pasan directo
+		const headers = buildResponseHeaders(provider, response);
 		return new Response(response.body, {
 			status: response.status,
-			headers: buildResponseHeaders(provider, response),
+			headers,
 		});
 	}
 
-	// Para Google: leemos el body, lo convertimos, devolvemos formato OpenAI
+	// Google no soporta streaming nativo en este formato,
+	// convertimos la respuesta completa a formato OpenAI
 	try {
 		const googleData = (await response.json()) as Record<string, unknown>;
 		const openAIData = convertGoogleToOpenAI(googleData);
+
+		if (stream) {
+			// Envolvemos la respuesta de Google en un stream SSE falso
+			// para que Continue y otros clientes que piden stream no rompan
+			const chunk = JSON.stringify({
+				id: openAIData.id,
+				object: 'chat.completion.chunk',
+				created: openAIData.created,
+				model: openAIData.model,
+				choices: [
+					{
+						index: 0,
+						delta: {
+							role: 'assistant',
+							content: (openAIData.choices as Array<Record<string, unknown>>)[0]?.message
+								? ((openAIData.choices as Array<Record<string, unknown>>)[0].message as Record<string, unknown>).content
+								: '',
+						},
+						finish_reason: null,
+					},
+				],
+			});
+
+			const finalChunk = JSON.stringify({
+				id: openAIData.id,
+				object: 'chat.completion.chunk',
+				created: openAIData.created,
+				model: openAIData.model,
+				choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+			});
+
+			const sseBody = `data: ${chunk}\n\ndata: ${finalChunk}\n\ndata: [DONE]\n\n`;
+
+			return new Response(sseBody, {
+				status: 200,
+				headers: {
+					'Content-Type': 'text/event-stream',
+					'Cache-Control': 'no-cache',
+					'X-Proxy-Provider': provider.name,
+					'X-Proxy-Model': provider.modelId,
+				},
+			});
+		}
 
 		return new Response(JSON.stringify(openAIData), {
 			status: response.status,
 			headers: {
 				'Content-Type': 'application/json',
 				'X-Proxy-Provider': provider.name,
+				'X-Proxy-Model': provider.modelId,
 			},
 		});
 	} catch {
