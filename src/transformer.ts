@@ -31,13 +31,20 @@ function buildOpenAIRequest(provider: AIProvider, incoming: IncomingRequest, env
 		headers['X-Title'] = 'AI Proxy';
 	}
 
-	const body = {
+	const body: Record<string, unknown> = {
 		model: provider.modelId,
 		messages: incoming.messages,
 		stream: incoming.stream ?? false,
 		temperature: incoming.temperature ?? 0.7,
 		max_tokens: incoming.max_tokens ?? 4096,
 	};
+
+	if (incoming.tools) {
+		body.tools = incoming.tools;
+	}
+	if (incoming.tool_choice) {
+		body.tool_choice = incoming.tool_choice;
+	}
 
 	return new Request(provider.endpoint, {
 		method: 'POST',
