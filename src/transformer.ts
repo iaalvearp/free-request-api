@@ -57,10 +57,8 @@ function buildOpenAIRequest(provider: AIProvider, incoming: IncomingRequest, env
 
 function buildGoogleRequest(provider: AIProvider, incoming: IncomingRequest, env: Env): Request {
 	const apiKey = env[provider.apiKeyEnvVar];
-	// Google recibe la key como query param
 	const url = `${provider.endpoint}?key=${apiKey}`;
 
-	// Convierte el formato OpenAI de mensajes al formato de Google
 	const contents = incoming.messages
 		.filter((m) => m.role !== 'system')
 		.map((m) => ({
@@ -68,7 +66,6 @@ function buildGoogleRequest(provider: AIProvider, incoming: IncomingRequest, env
 			parts: [{ text: m.content }],
 		}));
 
-	// El system prompt va aparte en Google
 	const systemMessage = incoming.messages.find((m) => m.role === 'system');
 	const systemInstruction = systemMessage ? { parts: [{ text: systemMessage.content }] } : undefined;
 
@@ -82,6 +79,24 @@ function buildGoogleRequest(provider: AIProvider, incoming: IncomingRequest, env
 
 	if (systemInstruction) {
 		body.systemInstruction = systemInstruction;
+	}
+
+	// Traduce tools de formato OpenAI a formato Google (functionDeclarations)
+	if (incoming.tools && Array.isArray(incoming.tools) && incoming.tools.length > 0) {
+		const functionDeclarations = (incoming.tools as Array<Record<string, unknown>>)
+			.filter((tool) => tool.type === 'function')
+			.map((tool) => {
+				const fn = tool.function as Record<string, unknown>;
+				return {
+					name: fn.name,
+					description: fn.description,
+					parameters: fn.parameters,
+				};
+			});
+
+		if (functionDeclarations.length > 0) {
+			body.tools = [{ functionDeclarations }];
+		}
 	}
 
 	return new Request(url, {
@@ -193,8 +208,43 @@ function convertGoogleToOpenAI(data: Record<string, unknown>): Record<string, un
 	const firstCandidate = candidates?.[0];
 	const content = firstCandidate?.content as Record<string, unknown> | undefined;
 	const parts = content?.parts as Array<Record<string, unknown>> | undefined;
-	const text = (parts?.[0]?.text as string) ?? '';
 
+	// Busca si alguna parte es una function call
+	const functionCallPart = parts?.find((p) => p.functionCall);
+
+	if (functionCallPart) {
+		const fc = functionCallPart.functionCall as Record<string, unknown>;
+		return {
+			id: `chatcmpl-google-${Date.now()}`,
+			object: 'chat.completion',
+			created: Math.floor(Date.now() / 1000),
+			model: 'gemini-2.5-flash',
+			choices: [
+				{
+					index: 0,
+					message: {
+						role: 'assistant',
+						content: null,
+						tool_calls: [
+							{
+								id: `call_${Date.now()}`,
+								type: 'function',
+								function: {
+									name: fc.name,
+									arguments: JSON.stringify(fc.args ?? {}),
+								},
+							},
+						],
+					},
+					finish_reason: 'tool_calls',
+				},
+			],
+			usage: data.usageMetadata ?? {},
+		};
+	}
+
+	// Respuesta de texto normal, sin tool calls
+	const text = (parts?.[0]?.text as string) ?? '';
 	return {
 		id: `chatcmpl-google-${Date.now()}`,
 		object: 'chat.completion',
