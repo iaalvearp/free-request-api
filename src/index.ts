@@ -83,7 +83,7 @@ export default {
 		// GET /stats
 		if (request.method === 'GET' && url.pathname === '/stats') {
 			const authHeader = request.headers.get('Authorization');
-			const expectedAuth = `Bearer ${env.PROXY_KEY}`;
+			const expectedAuth = `Bearer ${env.CUSTOM_API_KEY}`;
 			if (!authHeader || authHeader !== expectedAuth) {
 				return errorResponse('Unauthorized', 401, 'unauthorized');
 			}
@@ -100,10 +100,10 @@ export default {
 
 		// Auth
 		const authHeader = request.headers.get('Authorization');
-		const expectedAuth = `Bearer ${env.PROXY_KEY}`;
+		const expectedAuth = `Bearer ${env.CUSTOM_API_KEY}`;
 		if (!authHeader || authHeader !== expectedAuth) {
-			log('WARN', 'Request rechazado: PROXY_KEY inválida', { maskedAuth: maskAuthHeader(request) });
-			return errorResponse('Unauthorized: PROXY_KEY inválida', 401, 'unauthorized');
+			log('WARN', 'Request rechazado: CUSTOM_API_KEY inválida', { maskedAuth: maskAuthHeader(request) });
+			return errorResponse('Unauthorized: CUSTOM_API_KEY inválida', 401, 'unauthorized');
 		}
 
 		// Parse body

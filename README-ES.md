@@ -20,15 +20,14 @@ pnpm run dev                      # http://localhost:8787
 ## Secrets de producción
 
 ```bash
-npx wrangler secret put PROXY_KEY
-npx wrangler secret put GEMINI_API_KEY_1
-npx wrangler secret put GEMINI_API_KEY_2   # opcional
+npx wrangler secret put CUSTOM_API_KEY
+npx wrangler secret put GOOGLE_API_KEY
 npx wrangler secret put DEEPSEEK_API_KEY
 npx wrangler secret put GROQ_API_KEY
 npx wrangler secret put CEREBRAS_API_KEY
 ```
 
-Generá una `PROXY_KEY` segura: `openssl rand -base64 32`
+Generá una `CUSTOM_API_KEY` segura: `openssl rand -base64 32`
 
 ## Endpoints
 
@@ -38,7 +37,7 @@ Body compatible con OpenAI. Si el cliente NO es OpenCode (o no envía `model`) e
 
 ```bash
 curl -X POST http://localhost:8787/v1/chat/completions \
-  -H "Authorization: Bearer $PROXY_KEY" \
+  -H "Authorization: Bearer $CUSTOM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hola"}],"model":"gemini-2.5-flash"}'
 ```
@@ -55,14 +54,14 @@ Headers de respuesta:
 ```bash
 # Con User-Agent opencode + modelo explícito → NO rota, usa ese modelo exacto
 curl -X POST http://localhost:8787/v1/chat/completions \
-  -H "Authorization: Bearer $PROXY_KEY" \
+  -H "Authorization: Bearer $CUSTOM_API_KEY" \
   -H "Content-Type: application/json" \
   -H "User-Agent: opencode/1.0" \
   -d '{"messages":[{"role":"user","content":"Hola"}],"model":"gemini-2.5-flash"}'
 
 # Sin User-Agent → elige modelo por weighted random
 curl -X POST http://localhost:8787/v1/chat/completions \
-  -H "Authorization: Bearer $PROXY_KEY" \
+  -H "Authorization: Bearer $CUSTOM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hola"}]}'
 ```
@@ -80,7 +79,7 @@ curl http://localhost:8787/health
 Contador diario de requests vs límite de Cloudflare (100k/día):
 
 ```bash
-curl -H "Authorization: Bearer $PROXY_KEY" http://localhost:8787/stats
+curl -H "Authorization: Bearer $CUSTOM_API_KEY" http://localhost:8787/stats
 ```
 
 ## Proveedores
@@ -100,7 +99,7 @@ curl -H "Authorization: Bearer $PROXY_KEY" http://localhost:8787/stats
 | `deepseek-v4-flash-20260423` | 4 | deepseek |
 | `llama-3.3-70b-versatile` | 3 | groq |
 | `llama-3.3-70b` | 3 | cerebras |
-| `deepseek-r1-distill-llama-70b` | 2 | groq |
+| `openai/gpt-oss-120b` | 2 | groq |
 
 ## Logging
 

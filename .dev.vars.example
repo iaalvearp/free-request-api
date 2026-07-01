@@ -5,11 +5,10 @@
 # ============================================================
 
 # Clave de autenticación del proxy (genera con: openssl rand -base64 32)
-PROXY_KEY=
+CUSTOM_API_KEY=
 
-# Google AI Studio — Gemini 2.5 Flash (hasta 2 cuentas opcionales)
-GEMINI_API_KEY_1=
-GEMINI_API_KEY_2=
+# Google AI Studio — Gemini 2.5 Flash
+GOOGLE_API_KEY=
 
 # DeepSeek Platform
 DEEPSEEK_API_KEY=

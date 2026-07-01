@@ -39,10 +39,9 @@ export interface ProviderHealth {
 }
 
 export interface Env {
-	PROXY_KEY: string;
+	CUSTOM_API_KEY: string;
 	ENVIRONMENT: string;
-	GEMINI_API_KEY_1: string;
-	GEMINI_API_KEY_2: string;
+	GOOGLE_API_KEY: string;
 	DEEPSEEK_API_KEY: string;
 	GROQ_API_KEY: string;
 	CEREBRAS_API_KEY: string;

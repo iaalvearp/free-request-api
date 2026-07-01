@@ -1,11 +1,11 @@
 import type { ModelEntry, ProviderName, ProviderConfig, Env } from './types';
 
 export const MODEL_POOL: ModelEntry[] = [
-	{ id: 'gemini-2.5-flash', weight: 4, provider: 'gemini', envKey: 'GEMINI_API_KEY_1', contextWindow: 1_048_576 },
+	{ id: 'gemini-2.5-flash', weight: 4, provider: 'gemini', envKey: 'GOOGLE_API_KEY', contextWindow: 1_048_576 },
 	{ id: 'deepseek-v4-flash-20260423', weight: 4, provider: 'deepseek', envKey: 'DEEPSEEK_API_KEY', contextWindow: 1_000_000 },
 	{ id: 'llama-3.3-70b-versatile', weight: 3, provider: 'groq', envKey: 'GROQ_API_KEY', contextWindow: 131_072 },
 	{ id: 'llama-3.3-70b', weight: 3, provider: 'cerebras', envKey: 'CEREBRAS_API_KEY', contextWindow: 131_072 },
-	{ id: 'deepseek-r1-distill-llama-70b', weight: 2, provider: 'groq', envKey: 'GROQ_API_KEY', contextWindow: 131_072 },
+	{ id: 'openai/gpt-oss-120b', weight: 2, provider: 'groq', envKey: 'GROQ_API_KEY', contextWindow: 131_072 },
 ];
 
 export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
@@ -15,9 +15,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
 	cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions' },
 };
 
-export const ALT_KEYS: Partial<Record<ProviderName, string[]>> = {
-	gemini: ['GEMINI_API_KEY_2'],
-};
+export const ALT_KEYS: Partial<Record<ProviderName, string[]>> = {};
 
 export function getAvailableModels(env: Env): ModelEntry[] {
 	return MODEL_POOL.filter((m) => {
