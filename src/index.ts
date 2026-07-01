@@ -227,8 +227,8 @@ export default {
 						continue;
 					}
 
-					// Upstream error
-					if (response.status >= 500) {
+					// Upstream error (500+ o 404 Not Found)
+					if (response.status >= 500 || response.status === 404) {
 						markError(currentModel.provider);
 						const reason = `${response.status} ${response.statusText} (${currentModel.provider})`;
 						errors.push({ model: currentModel.id, provider: currentModel.provider, reason });
@@ -237,16 +237,22 @@ export default {
 						continue;
 					}
 
-					// 400 context_length_exceeded
+					// 400 context_length_exceeded o Model Not Found
 					if (response.status === 400) {
 						const body = await response.text();
-						const isContextError = body.toLowerCase().includes('context_length') || body.toLowerCase().includes('too large') || body.toLowerCase().includes('maximum context');
-						if (isContextError) {
-							const reason = `400 context_length_exceeded (${currentModel.provider})`;
+						const bodyLower = body.toLowerCase();
+						const isContextError =
+							bodyLower.includes('context_length') || bodyLower.includes('too large') || bodyLower.includes('maximum context');
+						const isModelError = bodyLower.includes('does not exist') || bodyLower.includes('not found') || bodyLower.includes('model');
+
+						if (isContextError || isModelError) {
+							const reason = `400 ${isContextError ? 'context_length_exceeded' : 'model_not_found'} (${currentModel.provider})`;
 							errors.push({ model: currentModel.id, provider: currentModel.provider, reason });
 							fallbackCount++;
-							log('WARN', `Context length exceeded en ${currentModel.id}`, { provider: currentModel.provider });
-							continue;
+							log('WARN', `Error 400 en ${currentModel.id}: ${isContextError ? 'Contexto' : 'Modelo no encontrado'}`, {
+								provider: currentModel.provider,
+							});
+							continue; // <-- Esto hace que intente con el siguiente modelo
 						}
 						// Non-context 400: return to client
 						markError(currentModel.provider);
