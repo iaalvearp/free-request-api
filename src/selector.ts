@@ -1,99 +1,98 @@
-// ============================================================
-// SELECTOR DE PROVEEDOR: weighted random + cooldown + failover
-// ============================================================
-import type { AIProvider, ProviderHealth } from './types';
+import type { ModelEntry, ProviderHealth, ProviderName } from './types';
 import { log } from './utils';
 
-// Tiempo de cooldown cuando un proveedor devuelve 429 (3 minutos)
-const COOLDOWN_MS = 3 * 60 * 1000;
+const COOLDOWN_429_MS = 3 * 60 * 1000;
+const COOLDOWN_ERROR_MS = 60 * 1000;
+const THROTTLE_MS = 1000;
 
-// Tiempo de cooldown cuando un proveedor devuelve 5xx (1 minuto)
-const ERROR_COOLDOWN_MS = 60 * 1000;
-
-/**
- * Mapa de salud de los proveedores en esta instancia del Worker.
- * Como los Workers son stateless, este mapa vive solo mientras
- * el Isolate está activo (minutos a horas, dependiendo del tráfico).
- */
 const healthMap = new Map<string, ProviderHealth>();
+const throttleMap = new Map<string, number>();
 
-/**
- * Obtiene o inicializa el estado de salud de un proveedor.
- */
-function getHealth(providerId: string): ProviderHealth {
-	if (!healthMap.has(providerId)) {
-		healthMap.set(providerId, { cooldownUntil: 0, consecutiveFailures: 0 });
+function getHealth(providerName: string): ProviderHealth {
+	if (!healthMap.has(providerName)) {
+		healthMap.set(providerName, {
+			lastSuccess: 0,
+			last429: 0,
+			lastError: 0,
+			successCount: 0,
+			failureCount: 0,
+			cooldownUntil: 0,
+			consecutiveFailures: 0,
+		});
 	}
-	return healthMap.get(providerId)!;
+	return healthMap.get(providerName)!;
 }
 
-/**
- * Marca un proveedor como en cooldown tras un 429.
- */
-export function markRateLimited(providerId: string): void {
-	const health = getHealth(providerId);
-	health.cooldownUntil = Date.now() + COOLDOWN_MS;
-	health.consecutiveFailures += 1;
-	log('WARN', `Proveedor en cooldown por 429`, { providerId, cooldownMs: COOLDOWN_MS });
+export function markSuccess(providerName: ProviderName): void {
+	const h = getHealth(providerName);
+	h.lastSuccess = Date.now();
+	h.successCount++;
+	h.consecutiveFailures = 0;
+	h.cooldownUntil = 0;
 }
 
-/**
- * Marca un proveedor como en cooldown tras un error 5xx.
- */
-export function markError(providerId: string): void {
-	const health = getHealth(providerId);
-	health.cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
-	health.consecutiveFailures += 1;
-	log('WARN', `Proveedor en cooldown por error`, { providerId, cooldownMs: ERROR_COOLDOWN_MS });
+export function markRateLimited(providerName: ProviderName): void {
+	const h = getHealth(providerName);
+	h.last429 = Date.now();
+	h.failureCount++;
+	h.consecutiveFailures++;
+	h.cooldownUntil = Date.now() + COOLDOWN_429_MS;
+	log('WARN', `Provider rate limited`, { provider: providerName, cooldownMs: COOLDOWN_429_MS });
 }
 
-/**
- * Marca un proveedor como exitoso (resetea fallos).
- */
-export function markSuccess(providerId: string): void {
-	const health = getHealth(providerId);
-	health.cooldownUntil = 0;
-	health.consecutiveFailures = 0;
+export function markError(providerName: ProviderName): void {
+	const h = getHealth(providerName);
+	h.lastError = Date.now();
+	h.failureCount++;
+	h.consecutiveFailures++;
+	h.cooldownUntil = Date.now() + COOLDOWN_ERROR_MS;
 }
 
-/**
- * Verifica si un proveedor está disponible (fuera de cooldown).
- */
-function isAvailable(providerId: string): boolean {
-	const health = getHealth(providerId);
-	return Date.now() >= health.cooldownUntil;
+function isAvailable(providerName: string): boolean {
+	const h = getHealth(providerName);
+	return Date.now() >= h.cooldownUntil;
 }
 
-/**
- * Selecciona un proveedor usando weighted random entre los disponibles.
- * Si todos están en cooldown, usa todos como fallback (evita quedarse sin opciones).
- *
- * @param providers - lista filtrada de proveedores con key configurada
- * @param exclude   - IDs a excluir en este intento (ya fallaron en este request)
- */
-export function selectProvider(providers: AIProvider[], exclude: Set<string> = new Set()): AIProvider | null {
-	// Filtra los disponibles (fuera de cooldown y no excluidos en este request)
-	let candidates = providers.filter((p) => !exclude.has(p.id) && isAvailable(p.id));
-
-	// Si todos están en cooldown, ignora el cooldown como último recurso
-	if (candidates.length === 0) {
-		candidates = providers.filter((p) => !exclude.has(p.id));
-		if (candidates.length === 0) return null;
-		log('WARN', 'Todos los proveedores en cooldown, ignorando cooldown');
+export function checkThrottle(providerName: ProviderName): number | null {
+	const now = Date.now();
+	const lastCall = throttleMap.get(providerName) ?? 0;
+	const elapsed = now - lastCall;
+	if (elapsed < THROTTLE_MS) {
+		return THROTTLE_MS - elapsed;
 	}
+	return null;
+}
 
-	// Weighted random: construye un array "ruleta" donde cada proveedor
-	// ocupa tantas posiciones como su peso
-	const totalWeight = candidates.reduce((sum, p) => sum + p.weight, 0);
-	let random = Math.random() * totalWeight;
+export function updateThrottle(providerName: ProviderName): void {
+	throttleMap.set(providerName, Date.now());
+}
 
-	for (const provider of candidates) {
-		random -= provider.weight;
-		if (random <= 0) {
-			return provider;
-		}
+export function getHealthSnapshot(): Record<string, ProviderHealth> {
+	const snapshot: Record<string, ProviderHealth> = {};
+	for (const [key, val] of healthMap) {
+		snapshot[key] = { ...val };
 	}
+	return snapshot;
+}
 
-	// Fallback por precisión numérica
-	return candidates[candidates.length - 1];
+export function selectWeightedModel(models: ModelEntry[]): ModelEntry | null {
+	const totalWeight = models.reduce((sum, m) => sum + m.weight, 0);
+	if (totalWeight === 0) return models[0] ?? null;
+
+	let rand = Math.random() * totalWeight;
+	for (const model of models) {
+		rand -= model.weight;
+		if (rand <= 0) return model;
+	}
+	return models[models.length - 1];
+}
+
+export function selectFallbackModel(failedModelId: string, models: ModelEntry[]): ModelEntry | null {
+	const idx = models.findIndex((m) => m.id === failedModelId);
+	if (idx === -1 || idx >= models.length - 1) return null;
+	return models[idx + 1];
+}
+
+export function filterAvailableModels(models: ModelEntry[]): ModelEntry[] {
+	return models.filter((m) => isAvailable(m.provider));
 }

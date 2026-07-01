@@ -1,0 +1,21 @@
+# ============================================================
+# LOCAL DEVELOPMENT SECRETS (template)
+# Copia este archivo como .dev.vars y completa tus claves.
+# .dev.vars está en .gitignore — NUNCA lo comitees.
+# ============================================================
+
+# Clave de autenticación del proxy (genera con: openssl rand -base64 32)
+PROXY_KEY=
+
+# Google AI Studio — Gemini 2.5 Flash (hasta 2 cuentas opcionales)
+GEMINI_API_KEY_1=
+GEMINI_API_KEY_2=
+
+# DeepSeek Platform
+DEEPSEEK_API_KEY=
+
+# Groq
+GROQ_API_KEY=
+
+# Cerebras (cloud.cerebras.ai)
+CEREBRAS_API_KEY=

@@ -1,18 +1,8 @@
-// ============================================================
-// TIPOS GLOBALES DEL PROXY
-// ============================================================
-
-/**
- * Formato de mensaje compatible con OpenAI (lo que manda Opencode)
- */
 export interface ChatMessage {
 	role: 'user' | 'assistant' | 'system';
 	content: string;
 }
 
-/**
- * El body que llega desde Opencode/VSCode al proxy
- */
 export interface IncomingRequest {
 	model?: string;
 	messages: ChatMessage[];
@@ -24,67 +14,38 @@ export interface IncomingRequest {
 	[key: string]: unknown;
 }
 
-/**
- * Formatos de API que soporta el proxy.
- * - openai: formato estándar (NVIDIA NIM, Groq, OpenRouter, OVHcloud)
- * - google: formato nativo de Gemini (distinto al de OpenAI)
- */
-export type ProviderFormat = 'openai' | 'google';
+export type ProviderName = 'gemini' | 'deepseek' | 'groq' | 'cerebras';
 
-/**
- * Estado de salud de un proveedor en esta instancia del Worker
- */
+export interface ModelEntry {
+	id: string;
+	weight: number;
+	provider: ProviderName;
+	envKey: string;
+	contextWindow: number;
+}
+
+export interface ProviderConfig {
+	url: string;
+}
+
 export interface ProviderHealth {
-	cooldownUntil: number; // timestamp en ms; 0 = disponible
+	lastSuccess: number;
+	last429: number;
+	lastError: number;
+	successCount: number;
+	failureCount: number;
+	cooldownUntil: number;
 	consecutiveFailures: number;
 }
 
-/**
- * Definición de un proveedor en el pool
- */
-export interface AIProvider {
-	id: string; // identificador único, ej: "nvidia-deepseek-flash"
-	name: string; // nombre legible, ej: "NVIDIA DeepSeek V4 Flash"
-	endpoint: string; // URL completa del endpoint
-	apiKeyEnvVar: string; // nombre de la variable de entorno con la API key
-	modelId: string; // el model ID que espera el proveedor
-	format: ProviderFormat; // formato de la API
-	weight: number; // peso para weighted random (mayor = más probabilidad)
-	requiresApiKey: boolean; // false para OVHcloud anónimo
-}
-
-/**
- * Variables de entorno disponibles en el Worker.
- * Cada API key se inyecta como secreto en Cloudflare.
- */
 export interface Env {
-	CUSTOM_API_KEY: string; // tu clave personal para proteger el proxy
+	PROXY_KEY: string;
 	ENVIRONMENT: string;
-
-	// NVIDIA NIM (puedes tener múltiples cuentas)
-	NVIDIA_API_KEY_1: string;
-	NVIDIA_API_KEY_2: string;
-	NVIDIA_API_KEY_3: string;
-
-	// Groq
+	GEMINI_API_KEY_1: string;
+	GEMINI_API_KEY_2: string;
+	DEEPSEEK_API_KEY: string;
 	GROQ_API_KEY: string;
-
-	// Google AI Studio
-	GOOGLE_API_KEY: string;
-
-	// OpenRouter
-	OPENROUTER_API_KEY: string;
-
-	// OVHcloud (no necesita key, pero la interfaz lo requiere)
+	CEREBRAS_API_KEY: string;
 	PROXY_STATS: KVNamespace;
 	[key: string]: unknown;
-}
-
-/**
- * Resultado de intentar llamar a un proveedor
- */
-export interface ProxyAttempt {
-	provider: AIProvider;
-	response: Response | null;
-	error: string | null;
 }
