@@ -155,34 +155,36 @@ export default {
 		}
 
 		// Context overflow check
-		const overflow = checkContextOverflow(incoming.messages, targetModel.contextWindow);
-		if (overflow.overflow) {
-			log('WARN', 'Context overflow detectado antes de enviar', {
-				model: targetModel.id,
-				estimated: overflow.estimated,
-				threshold: overflow.threshold,
-			});
-			return new Response(
-				JSON.stringify({
-					error: {
-						message: `Contexto demasiado grande para ${targetModel.id}: ~${overflow.estimated} tokens estimados, máximo ${overflow.threshold}`,
-						type: 'context_too_large',
-						code: 'context_too_large',
-					},
-				}),
-				{
-					status: 400,
-					headers: {
-						'Content-Type': 'application/json',
-						'Access-Control-Allow-Origin': '*',
-						'X-Reason': 'context-too-large-for-model',
-						'X-Model-Used': targetModel.id,
-						'X-Provider-Used': targetModel.provider,
-						'X-Model-Context-Window': String(targetModel.contextWindow),
-					},
-				},
-			);
-		}
+		/*
+        const overflow = checkContextOverflow(incoming.messages, targetModel.contextWindow);
+        if (overflow.overflow) {
+            log('WARN', 'Context overflow detectado antes de enviar', {
+                model: targetModel.id,
+                estimated: overflow.estimated,
+                threshold: overflow.threshold,
+            });
+            return new Response(
+                JSON.stringify({
+                    error: {
+                        message: `Contexto demasiado grande para ${targetModel.id}: ~${overflow.estimated} tokens estimados, máximo ${overflow.threshold}`,
+                        type: 'context_too_large',
+                        code: 'context_too_large',
+                    },
+                }),
+                {
+                    status: 400,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                        'X-Reason': 'context-too-large-for-model',
+                        'X-Model-Used': targetModel.id,
+                        'X-Provider-Used': targetModel.provider,
+                        'X-Model-Context-Window': String(targetModel.contextWindow),
+                    },
+                },
+            );
+        }
+        */
 
 		// Failover loop
 		const errors: AttemptRecord[] = [];
