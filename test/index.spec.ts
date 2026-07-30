@@ -92,6 +92,65 @@ function createMockEnv(overrides: Partial<Record<string, string>> = {}) {
 	};
 }
 
+// ─── Streaming Mock Helpers ─────────────────────────────────────
+
+function createStreamResponse(chunks: string[], contentType = 'text/event-stream'): Response {
+	const encoder = new TextEncoder();
+	const stream = new ReadableStream({
+		start(controller) {
+			for (const chunk of chunks) {
+				controller.enqueue(encoder.encode(chunk));
+			}
+			controller.close();
+		},
+	});
+	return new Response(stream, {
+		status: 200,
+		statusText: 'OK',
+		headers: { 'Content-Type': contentType },
+	});
+}
+
+function installMockFetchStream(
+	responses: Array<Response>,
+): { mock: ReturnType<typeof vi.fn>; calls: MockCall[] } {
+	let idx = 0;
+	const calls: MockCall[] = [];
+
+	const mock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+		const req = input instanceof Request ? input : new Request(String(input));
+		let bodyRaw = '';
+		let model = '';
+		try {
+			bodyRaw = await req.text();
+			model = (JSON.parse(bodyRaw).model as string) ?? '';
+		} catch {
+			/* noop */
+		}
+		const auth = req.headers.get('Authorization') ?? '';
+		calls.push({ url: req.url, model, auth, bodyRaw });
+
+		const s = responses[Math.min(idx, responses.length - 1)];
+		idx++;
+		return s;
+	});
+
+	vi.stubGlobal('fetch', mock);
+	return { mock, calls };
+}
+
+async function readStreamBody(res: Response): Promise<string> {
+	const reader = res.body!.getReader();
+	const decoder = new TextDecoder();
+	const chunks: string[] = [];
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		chunks.push(decoder.decode(value, { stream: true }));
+	}
+	return chunks.join('');
+}
+
 // ─── Tests ─────────────────────────────────────────────────────
 
 describe('free-request-api Worker', () => {
@@ -1366,6 +1425,224 @@ describe('free-request-api Worker', () => {
 			expect(res3.headers.get('X-Model-Used')).toMatch(/deepseek/);
 			// Fallback count in Turn 3 must be 1
 			expect(res3.headers.get('X-Fallback-Count')).toBe('1');
+		});
+	});
+
+	// ── Streaming Behavior ──────────────────────────────────────
+	describe('Streaming Behavior', () => {
+		beforeEach(() => {
+			vi.spyOn(Math, 'random').mockReturnValue(0);
+		});
+
+		it('stream:false devuelve JSON completo', async () => {
+			const { calls } = installMockFetch([{ status: 200 }]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], stream: false }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(calls.length).toBe(1);
+			const body = await res.json();
+			expect(body).toHaveProperty('choices');
+			expect(body.choices[0].message.content).toBe('OK');
+		});
+
+		it('stream:false registra éxito una sola vez (no duplicado)', async () => {
+			resetAllHealth();
+			installMockFetch([{ status: 200 }]);
+			const healthBefore = getModelHealth('gemini', 'gemini-2.5-flash');
+			expect(healthBefore.successCount).toBe(0);
+
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], stream: false }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+
+			const healthAfter = getModelHealth('gemini', 'gemini-2.5-flash');
+			// successCount should be exactly 1 (not 2)
+			expect(healthAfter.successCount).toBe(1);
+		});
+
+		it('stream:true entrega el primer fragmento antes del segundo', async () => {
+			const chunks = ['data: {"content":"first"}\n\n', 'data: {"content":"second"}\n\n', 'data: [DONE]\n\n'];
+			const streamRes = createStreamResponse(chunks);
+			installMockFetchStream([streamRes]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'stream me' }], stream: true }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(res.status).toBe(200);
+			const reader = res.body!.getReader();
+			const decoder = new TextDecoder();
+			const { value: firstValue } = await reader.read();
+			const firstChunk = decoder.decode(firstValue!, { stream: true });
+			expect(firstChunk).toBe(chunks[0]);
+
+			// Read the rest
+			let rest = '';
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				rest += decoder.decode(value, { stream: true });
+			}
+			expect(firstChunk + rest).toBe(chunks.join(''));
+		});
+
+		it('los fragmentos SSE se conservan byte por byte', async () => {
+			const chunks = ['data: {"delta":"hello"}\n\n', 'data: {"delta":" world"}\n\n', 'data: [DONE]\n\n'];
+			const streamRes = createStreamResponse(chunks);
+			installMockFetchStream([streamRes]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], stream: true }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			const body = await readStreamBody(res);
+			expect(body).toBe(chunks.join(''));
+		});
+
+		it('tool_calls fragmentados se conservan', async () => {
+			const chunks = [
+				'data: {"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]}}\n\n',
+				'data: {"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"location\\":\\"Madrid\\"}"}}]}}\n\n',
+				'data: [DONE]\n\n',
+			];
+			const streamRes = createStreamResponse(chunks);
+			installMockFetchStream([streamRes]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'weather' }], stream: true }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			const body = await readStreamBody(res);
+			expect(body).toContain('tool_calls');
+			expect(body).toContain('get_weather');
+			expect(body).toContain('Madrid');
+		});
+
+		it('un 429 anterior al stream activa failover', async () => {
+			const successChunks = ['data: {"content":"ok"}\n\n', 'data: [DONE]\n\n'];
+			const successRes = createStreamResponse(successChunks);
+			const mock = vi.fn()
+				.mockImplementationOnce(async () => new Response('rate limited', { status: 429, headers: { 'Content-Type': 'application/json' } }))
+				.mockImplementationOnce(async () => successRes);
+			vi.stubGlobal('fetch', mock);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], stream: true }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+			const body = await readStreamBody(res);
+			expect(body).toContain('ok');
+			expect(mock.mock.calls.length).toBe(2);
+		});
+
+		it('un HTTP 200 con body null activa failover', async () => {
+			const successChunks = ['data: {"content":"ok"}\n\n'];
+			const successRes = createStreamResponse(successChunks);
+			const nullBodyRes = new Response(null, { status: 200, headers: { 'Content-Type': 'text/plain' } });
+			const mock = vi.fn()
+				.mockImplementationOnce(async () => nullBodyRes)
+				.mockImplementationOnce(async () => successRes);
+			vi.stubGlobal('fetch', mock);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], stream: true }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+			const body = await readStreamBody(res);
+			expect(body).toContain('ok');
+			expect(mock.mock.calls.length).toBe(2);
+		});
+
+		it('un error en el stream no provoca nueva llamada upstream', async () => {
+			const encoder = new TextEncoder();
+			const erroredStream = new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode('data: {"content":"partial"}\n\n'));
+					controller.error(new Error('simulated stream error'));
+				},
+			});
+			const errorRes = new Response(erroredStream, {
+				status: 200,
+				statusText: 'OK',
+				headers: { 'Content-Type': 'text/event-stream' },
+			});
+			const { calls } = installMockFetchStream([errorRes]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], stream: true }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+			// Only 1 upstream call despite stream error (no failover after streaming starts)
+			expect(calls.length).toBe(1);
+		});
+
+		it('Content-Type y cabeceras X-* se conservan en stream', async () => {
+			const streamRes = createStreamResponse(['data: {"content":"ok"}\n\n']);
+			installMockFetchStream([streamRes]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], stream: true }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.headers.get('Content-Type')).toBe('text/event-stream');
+			expect(res.headers.get('X-Model-Used')).toBeTruthy();
+			expect(res.headers.get('X-Provider-Used')).toBeTruthy();
+			expect(res.headers.get('X-Fallback-Count')).toBe('0');
+			expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		});
+
+		it('el body upstream no se consume dos veces', async () => {
+			const chunks = ['data: {"content":"single use"}\n\n', 'data: [DONE]\n\n'];
+			const streamRes = createStreamResponse(chunks);
+			installMockFetchStream([streamRes]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], stream: true }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			// The response body should be a ReadableStream (not a string)
+			expect(res.body).toBeInstanceOf(ReadableStream);
+			// Reading the stream should return the exact content
+			const body = await readStreamBody(res);
+			expect(body).toBe(chunks.join(''));
 		});
 	});
 });

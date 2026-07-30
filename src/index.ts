@@ -274,6 +274,40 @@ export default {
 					const upstreamReq = buildUpstreamRequest(targetModel, envKey, normalizedIncoming, env, controller.signal);
 					const response = await fetch(upstreamReq);
 
+					const isStreaming = incoming.stream ?? false;
+
+					// If streaming, mark success before returning the ReadableStream
+					if (isStreaming && response.status === 200 && response.body !== null) {
+						markSuccess(targetModel.provider, targetModel.id);
+						ctx.waitUntil(incrementRequestCount(env));
+						if (virtualRoute && sessionId) {
+							updateAffinity(sessionId, virtualRoute, targetModel.id, targetModel.provider);
+						}
+					}
+
+					// If streaming, return the ReadableStream directly
+					if (isStreaming && response.status === 200 && response.body !== null) {
+						const retryReason = errors.length > 0 ? errors.map((e) => e.reason).join('; ') : null;
+						log('INFO', 'Request completado (streaming)', {
+							route: virtualRoute,
+							model: targetModel.id,
+							provider: targetModel.provider,
+							status: response.status,
+							openCode,
+							fallbackCount,
+							durationMs: Date.now() - startTime,
+						});
+						return buildProxyResponse(
+							response,
+							targetModel.id,
+							targetModel.provider,
+							targetModel.contextWindow,
+							retryReason,
+							fallbackCount,
+							true // isStreaming
+						);
+					}
+
 					const responseBody = await response.text();
 
 					// ResourceExhausted
@@ -297,12 +331,12 @@ export default {
 					}
 
 					// Upstream error (500+ or 404 Not Found)
-					if (response.status >= 500 || response.status === 404) {
+					if (response.status >= 500 || response.status === 404 || response.body === null) { // Added response.body === null
 						markError(targetModel.provider, targetModel.id);
 						const reason = `${response.status} ${response.statusText} (${targetModel.provider}/${targetModel.id})`;
 						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
 						fallbackCount++;
-						log('WARN', `Error ${response.status} en ${targetModel.id}`, { provider: targetModel.provider });
+						log('WARN', `Error ${response.status} en ${targetModel.id} o body nulo`, { provider: targetModel.provider, status: response.status, bodyIsNull: response.body === null });
 						continue;
 					}
 
@@ -337,6 +371,7 @@ export default {
 							targetModel.contextWindow,
 							null,
 							fallbackCount,
+							false, // isStreaming
 						);
 						log('INFO', 'Request completado (400 no-context)', {
 							model: targetModel.id,
@@ -348,23 +383,23 @@ export default {
 						return proxyResponse;
 					}
 
-					// Success
-					markSuccess(targetModel.provider, targetModel.id);
+					// This block is for non-streaming, successful responses
+					markSuccess(targetModel.provider, targetModel.id); // Already marked above for streaming, but safe to re-mark for non-streaming
 					ctx.waitUntil(incrementRequestCount(env));
 
-					// Update affinity on success
 					if (virtualRoute && sessionId) {
 						updateAffinity(sessionId, virtualRoute, targetModel.id, targetModel.provider);
 					}
 
 					const retryReason = errors.length > 0 ? errors.map((e) => e.reason).join('; ') : null;
 					const proxyResponse = buildProxyResponse(
-						new Response(responseBody, { status: response.status, statusText: response.statusText, headers: response.headers }),
-						targetModel.id,
-						targetModel.provider,
-						targetModel.contextWindow,
-						retryReason,
-						fallbackCount,
+new Response(responseBody, { status: response.status, statusText: response.statusText, headers: response.headers }),
+							targetModel.id,
+							targetModel.provider,
+							targetModel.contextWindow,
+							retryReason,
+							fallbackCount,
+							false, // isStreaming
 					);
 
 					log('INFO', 'Request completado', {

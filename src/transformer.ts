@@ -69,6 +69,7 @@ export function buildProxyResponse(
 	contextWindow: number,
 	retryReason: string | null,
 	fallbackCount: number,
+	isStreaming = false,
 ): Response {
 	const headers = new Headers(upstreamResponse.headers);
 	headers.set('Access-Control-Allow-Origin', '*');
@@ -78,6 +79,12 @@ export function buildProxyResponse(
 	headers.set('X-Fallback-Count', String(fallbackCount));
 	if (retryReason) {
 		headers.set('X-Retry-Reason', retryReason);
+	}
+
+	// For streaming responses, we need to preserve the original Content-Type
+	// For non-streaming, if the upstream did not return JSON, we force it to JSON.
+	if (!isStreaming && !headers.get('Content-Type')?.includes('json')) {
+		headers.set('Content-Type', 'application/json');
 	}
 
 	return new Response(upstreamResponse.body, {
