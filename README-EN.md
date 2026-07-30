@@ -15,15 +15,16 @@ Built on **Cloudflare Workers**, it runs at the edge across 300+ global location
 ## Features
 
 - **Single OpenAI-compatible endpoint** — works with any tool that accepts a custom `baseURL`
-- **Multi-provider pool** — NVIDIA NIM, Groq, Google AI Studio, OpenRouter, OVHcloud
+- **Multi-provider pool** — NVIDIA NIM, Groq, Google AI Studio, Cerebras
 - **Weighted random selection** — higher-quality models get more traffic by default
 - **Automatic failover** — if a provider returns 429 or 5xx, the next one is tried seamlessly
-- **Per-isolate cooldown tracker** — rate-limited providers are temporarily excluded from rotation
+- **Per-model cooldown tracker** — rate-limited models are temporarily excluded from rotation
 - **Exponential backoff with jitter** — smart retry logic on transient failures
 - **Daily request counter** — tracks Cloudflare's 100k/day free tier limit via KV storage
 - **Alert threshold** — warns at 90,000 requests/day before hitting the Cloudflare limit
 - **Stats endpoint** — query current usage anytime via `GET /stats`
 - **Zero cold-start secrets** — all API keys stored as encrypted Cloudflare secrets, never in code
+- **Virtual models** — `alpes-auto` for weighted rotation, `alpes-long` for 1M+ context models
 
 ---
 
@@ -33,46 +34,41 @@ Built on **Cloudflare Workers**, it runs at the edge across 300+ global location
 Opencode / Continue / VS Code
            │
            ▼
-  POST /v1/chat/completions
-  Authorization: Bearer <CUSTOM_API_KEY>
+   POST /v1/chat/completions
+   Authorization: Bearer <CUSTOM_API_KEY>
            │
            ▼
-  ┌─────────────────────────────────┐
-  │      Cloudflare Worker          │
-  │                                 │
-  │  1. Auth validation             │
-  │  2. Provider selection          │
-  │     └─ Weighted random          │
-  │     └─ Skip cooldown providers  │
-  │  3. Request transformation      │
-  │     └─ OpenAI format (default)  │
-  │     └─ Google Gemini format     │
-  │  4. Upstream fetch              │
-  │  5. Failover on 429 / 5xx       │
-  │  6. Response normalization      │
-  │  7. Request counter (KV)        │
-  └─────────────────────────────────┘
+   ┌─────────────────────────────────┐
+   │      Cloudflare Worker          │
+   │                                 │
+   │  1. Auth validation             │
+   │  2. Provider selection          │
+   │     └─ Weighted random          │
+   │     └─ Skip cooldown models     │
+   │  3. Request transformation      │
+   │     └─ OpenAI format (default)  │
+   │     └─ Google Gemini format     │
+   │  4. Upstream fetch              │
+   │  5. Failover on 429 / 5xx       │
+   │  6. Response normalization      │
+   │  7. Request counter (KV)        │
+   └─────────────────────────────────┘
            │
            ▼
-  ┌──────────────────────────────────────────┐
-  │           Provider Pool                  │
-  │                                          │
-  │  NVIDIA NIM     — DeepSeek V4 Flash      │
-  │                 — Nemotron Super 120B    │
-  │                 — Kimi K2.6              │
-  │                 — Qwen 3.5 122B          │
-  │                 — DeepSeek V4 Pro        │
-  │                                          │
-  │  Groq           — Llama 3.3 70B          │
-  │                 — DeepSeek R1 Distill    │
-  │                                          │
-  │  Google         — Gemini 2.5 Flash       │
-  │                                          │
-  │  OpenRouter     — DeepSeek V4 Flash      │
-  │                 — Kimi K2.6              │
-  │                                          │
-  │  OVHcloud       — Llama 3.3 70B (anon)  │
-  └──────────────────────────────────────────┘
+   ┌──────────────────────────────────────────┐
+   │           Provider Pool                  │
+   │                                          │
+   │  NVIDIA NIM     — DeepSeek V4 Flash      │
+   │                 — GLM 5.2                │
+   │                 — Nemotron 3 Super 120B  │
+   │                                          │
+   │  Groq           — Llama 3.3 70B          │
+   │                 — GPT-OSS 120B           │
+   │                                          │
+   │  Google         — Gemini 2.5 Flash       │
+   │                                          │
+   │  Cerebras       — Llama 3.3 70B          │
+   └──────────────────────────────────────────┘
 ```
 
 ---
@@ -117,12 +113,10 @@ Create a `.dev.vars` file in the project root (already in `.gitignore`):
 
 ```bash
 CUSTOM_API_KEY=your-generated-proxy-key
-NVIDIA_API_KEY_1=nvapi-xxxxxxxxxxxxxxxxxxxx
-NVIDIA_API_KEY_2=
-NVIDIA_API_KEY_3=
+NVIDIA_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxx
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx
 GOOGLE_API_KEY=AIzaxxxxxxxxxxxxxxxxxxxx
-OPENROUTER_API_KEY=sk-or-xxxxxxxxxxxxxxxxxxxx
+CEREBRAS_API_KEY=csk-xxxxxxxxxxxxxxxxxxxx
 ```
 
 Generate a secure `CUSTOM_API_KEY`:
@@ -187,12 +181,10 @@ Add each variable as type **Secret**:
 | Name | Description |
 |------|-------------|
 | `CUSTOM_API_KEY` | Your proxy access key (generated with `openssl rand -base64 32`) |
-| `NVIDIA_API_KEY_1` | NVIDIA NIM account 1 (`nvapi-...`) |
-| `NVIDIA_API_KEY_2` | NVIDIA NIM account 2 (optional) |
-| `NVIDIA_API_KEY_3` | NVIDIA NIM account 3 (optional) |
+| `NVIDIA_API_KEY` | NVIDIA NIM account (`nvapi-...`) |
 | `GROQ_API_KEY` | Groq API key (`gsk_...`) |
 | `GOOGLE_API_KEY` | Google AI Studio key (`AIza...`) |
-| `OPENROUTER_API_KEY` | OpenRouter key (`sk-or-...`) |
+| `CEREBRAS_API_KEY` | Cerebras Cloud key (`csk_...`) |
 
 ### 4. Deploy
 
@@ -206,7 +198,7 @@ pnpm run deploy
 
 ### `POST /v1/chat/completions`
 
-Standard OpenAI-compatible chat completions endpoint. The proxy selects a provider internally — the `model` field in the request body is ignored.
+Standard OpenAI-compatible chat completions endpoint. The proxy selects a provider internally — the `model` field in the request body is used for explicit model selection or virtual models.
 
 **Headers**
 
@@ -219,6 +211,7 @@ Content-Type: application/json
 
 ```json
 {
+  "model": "alpes-auto",  // or specific model ID like "gemini-2.5-flash"
   "messages": [
     { "role": "system", "content": "You are a helpful assistant." },
     { "role": "user", "content": "Explain async/await in JavaScript." }
@@ -228,7 +221,17 @@ Content-Type: application/json
 }
 ```
 
-**Response** — standard OpenAI `chat.completion` object with an additional `X-Proxy-Provider` header indicating which provider handled the request.
+**Virtual Models**
+
+- `alpes-auto` — weighted rotation across all available models
+- `alpes-long` — weighted rotation across models with ≥1M token context
+
+**Response** — standard OpenAI `chat.completion` object with additional headers:
+- `X-Model-Used` — actual model that responded
+- `X-Provider-Used` — provider (`gemini`, `nvidia`, `groq`, `cerebras`)
+- `X-Model-Context-Window` — max context of the model used
+- `X-Fallback-Count` — number of fallbacks before success
+- `X-Retry-Reason` — reason for fallback (if any)
 
 ---
 
@@ -246,7 +249,7 @@ Authorization: Bearer YOUR_CUSTOM_API_KEY
 
 ```json
 {
-  "date": "2026-06-27",
+  "date": "2026-07-16",
   "requests": 142,
   "limit": 100000,
   "remaining": 99858,
@@ -256,6 +259,12 @@ Authorization: Bearer YOUR_CUSTOM_API_KEY
 ```
 
 When `requests` reaches `alertThreshold`, the proxy logs a `WARN`-level alert visible via `pnpm wrangler tail`.
+
+---
+
+### `GET /health`
+
+Returns per-model health snapshot (last success, 429s, cooldown status).
 
 ---
 
@@ -271,7 +280,7 @@ Go to **Add provider → Custom** and fill in:
 | Display name | `Free Request API` |
 | Base URL | `https://free-request-api.YOUR_SUBDOMAIN.workers.dev/v1` |
 | API Key | your `CUSTOM_API_KEY` |
-| Model ID | `gpt-4o` |
+| Model ID | `alpes-auto` |
 | Model Name | `Free Proxy` |
 
 ### Continue (VS Code extension)
@@ -282,7 +291,7 @@ Open `config.yaml` via **Continue panel → ⚙️ → Config** and add:
 models:
   - name: Free Request API
     provider: openai
-    model: gpt-4o
+    model: alpes-auto
     apiBase: https://free-request-api.YOUR_SUBDOMAIN.workers.dev/v1
     apiKey: YOUR_CUSTOM_API_KEY
 ```
@@ -291,41 +300,44 @@ models:
 
 ## Providers
 
-All providers used are free-tier with no credit card required (except OpenRouter, which requires a payment method on file but does not charge for free models).
+All providers used are free-tier with no credit card required.
 
 | Provider | Models | RPM | RPD | Notes |
 |----------|--------|-----|-----|-------|
-| NVIDIA NIM | DeepSeek V4 Flash, Nemotron Super 120B, Kimi K2.6, Qwen 3.5 122B, DeepSeek V4 Pro | ~40 | unlimited | Phone verification required |
-| Groq | Llama 3.3 70B, DeepSeek R1 Distill 70B | 30 | 1,000/model | Fastest inference (LPU hardware) |
+| NVIDIA NIM | DeepSeek V4 Flash, GLM 5.2, Nemotron 3 Super 120B | ~40 | unlimited | Phone verification required |
+| Groq | Llama 3.3 70B, GPT-OSS 120B | 30 | 1,000/model | Fastest inference (LPU hardware) |
 | Google AI Studio | Gemini 2.5 Flash | 15 | 1,500 | 1M token context window |
-| OpenRouter | DeepSeek V4 Flash, Kimi K2.6 | 20 | 200 | 1,000/day with $10 credit |
-| OVHcloud | Llama 3.3 70B | 2 | unlimited | Anonymous, no signup required |
+| Cerebras | Llama 3.3 70B | 2 | unlimited | Ultra-fast inference |
 
-Adding multiple NVIDIA accounts multiplies capacity linearly (each account has independent rate limits per model).
+**Important Notes:**
+- A single `NVIDIA_API_KEY` enables multiple NVIDIA models
+- DeepSeek V4 Flash is consumed via NVIDIA (model `deepseek-ai/deepseek-v4-flash`)
+- `DEEPSEEK_API_KEY` is NOT used; direct DeepSeek endpoint is removed
+- OpenRouter has been removed
+- NVIDIA free endpoints are for development/testing, not production
+- Health tracking is per-model (`provider:modelId`); throttle is per-provider
 
 ---
 
 ## Adding a New Provider
 
-1. Open `src/providers.ts` and add an entry to `PROVIDER_POOL`:
+1. Open `src/providers.ts` and add an entry to `MODEL_POOL`:
 
 ```typescript
 {
   id: 'my-provider-model',
-  name: 'My Provider Model Name',
-  endpoint: 'https://api.myprovider.com/v1/chat/completions',
-  apiKeyEnvVar: 'MY_PROVIDER_API_KEY',
-  modelId: 'model-id-expected-by-provider',
-  format: 'openai',   // or 'google' for Gemini-native format
-  weight: 8,          // higher = more traffic
-  requiresApiKey: true,
-},
+  weight: 8,
+  provider: 'myprovider',
+  envKey: 'MY_PROVIDER_API_KEY',
+  contextWindow: 131072,
+}
 ```
 
-2. If it requires a new API key, add it to the `Env` interface in `src/types.ts`.
-3. Add the secret in the Cloudflare dashboard.
-4. If the provider uses a non-OpenAI request/response format, add an adapter in `src/transformer.ts`.
-5. Deploy: `pnpm run deploy`
+2. Add the provider URL to `PROVIDERS` record.
+3. If it requires a new API key, add it to the `Env` interface in `src/types.ts`.
+4. Add the secret in the Cloudflare dashboard.
+5. If the provider uses a non-OpenAI request/response format, add an adapter in `src/transformer.ts`.
+6. Deploy: `pnpm run deploy`
 
 ---
 
@@ -377,11 +389,11 @@ The proxy is designed to stay well within these limits for individual developer 
 
 ## Roadmap
 
-- [ ] NVIDIA NIM multi-account support (accounts 2 and 3)
+- [ ] NVIDIA NIM multi-account support
 - [ ] Per-provider request counter breakdown in `/stats`
 - [ ] Streaming support fix for Continue/VS Code
 - [ ] Webhook alert when daily limit threshold is reached
-- [ ] Additional provider adapters (Cerebras, SambaNova)
+- [ ] Additional provider adapters
 
 ---
 

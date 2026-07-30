@@ -1,20 +1,6 @@
 # free-request-api — AI Proxy Multi-Proveedor
 
-Cloudflare Worker en `free-request-api.iaalvearp.workers.dev`.
-Proxy OpenAI-compatible (`/v1/chat/completions`) que rota entre Gemini, DeepSeek, Groq y Cerebras.
-
-## Arquitectura
-
-```
-src/
-├── index.ts        → handler principal: auth, OpenCode detection, failover, routing
-├── types.ts        → Env, ModelEntry, ProviderName, IncomingRequest
-├── providers.ts    → MODEL_POOL (5 modelos con pesos), PROVIDERS map (URLs), ALT_KEYS
-├── selector.ts     → weighted random, throttle (1 req/s por provider), health tracking in-isolate
-├── transformer.ts  → construye upstream Request OpenAI-compatible, wrappea Response con headers
-├── stats.ts        → contador diario KV (100k/día Cloudflare)
-└── utils.ts        → sleep, calcBackoff, log estructurado, errorResponse
-```
+Cloudflare Worker proxy OpenAI-compatible que rota entre Gemini, NVIDIA, Groq y Cerebras.
 
 ## Comandos exactos
 
@@ -22,53 +8,71 @@ src/
 |---------|----------|
 | `pnpm run dev` | `wrangler dev` local en puerto 8787 |
 | `pnpm run test` | `vitest` con `@cloudflare/vitest-pool-workers` |
+| `pnpm run test:run` | `vitest run` (sin watch) |
 | `pnpm run deploy` | `wrangler deploy` |
+| `pnpm run typecheck` | `tsc --noEmit` |
 | `npx wrangler tail` | logs en tiempo real desde prod |
 | `npx wrangler secret put KEY` | inserta secreto en prod |
-| `npx wrangler types` | regenera `worker-configuration.d.ts` |
+| `pnpm test:nvidia` | valida modelos NVIDIA localmente |
 
-## Reglas clave para el agente
+## Reglas clave
 
 - **Auth**: Bearer contra `env.CUSTOM_API_KEY`.
-- **OpenCode detection**: `User-Agent` conteniendo "opencode" (case-insensitive) o header `X-OpenCode-Session` presente.
-- **OpenCode lock**: si es OpenCode + `model` en body → usar ESE modelo exacto, NO rotar.
-- **No OpenCode**: o sin `model` en body → weighted random del pool.
-- **Context overflow**: estimación ~4 chars/token. Si `contextWindow ≤ 128K` y `estimated > 50K` → 400 con `X-Reason: context-too-large-for-model`. Si `contextWindow ≥ 1M` y `estimated > 800K` → 400.
-- **Failover**: 429/503/timeout/400-context → siguiente modelo del pool.
-- **Timeout upstream**: 25s con `AbortController`. Timeout = 503 → rotar.
+- **OpenCode detection**: `User-Agent` conteniendo "opencode" o header `X-OpenCode-Session` presente.
+- **OpenCode + model en body** → usar ESE modelo exacto, NO rotar.
+- **Sin OpenCode o sin model** → weighted random del pool.
+- **Modelos virtuales**: `alpes-auto` (pool completo ponderado), `alpes-agent` (solo ≥1M ctx + tool calls), `alpes-small` (rápidos ≤131K).
+- **Virtual never upstream**: ningún modelo virtual se envía como nombre upstream.
+- **Context overflow**: ~4 chars/token. Si `contextWindow ≤ 128K` y `estimated > 50K` → 400. Si `contextWindow ≥ 1M` y `estimated > 800K` → 400.
+- **Failover**: 429/503/timeout/400-context/ResourceExhausted → siguiente modelo del pool elegible. Máximo un intento por modelo por solicitud.
+- **ResourceExhausted**: cooldown 15 min específico del modelo (no del proveedor).
+- **Timeout upstream**: 25s con `AbortController`.
 - **Throttle**: 1 req/s por provider (Map de timestamps en isolate).
+- **Health tracking**: por modelo (`provider:modelId`) en isolate. 404/model_not_found de un modelo NVIDIA NO deshabilita otros modelos NVIDIA. 401/403 de NVIDIA SÍ deshabilita todo el proveedor.
+- **Affinity**: por `sessionId + virtualRoute`. alpes-agent no afecta alpes-small ni viceversa.
 - **Response headers**: `X-Model-Used`, `X-Provider-Used`, `X-Model-Context-Window`, `X-Fallback-Count`, `X-Retry-Reason`.
-- **Error 502**: devuelve `lastErrors` con últimos 3 errores enmascarados (sin exponer keys).
 - **CORS**: OPTIONS responde con `Access-Control-Allow-Origin: *`.
-- **Stats endpoint**: `GET /stats` autenticado con `CUSTOM_API_KEY` (misma key que chat).
-- **Health endpoint**: `GET /health` público, devuelve snapshot de healthMap por provider.
-- **Secrets**: todas via Cloudflare Secrets, NUNCA hardcodeadas. `.dev.vars` en `.gitignore`.
+- **Secrets**: todas via Cloudflare Secrets o `.dev.vars`, NUNCA hardcodeadas.
+- **No deploy, no commit, no push** sin orden explícita.
 
 ## Pool de modelos
 
-```ts
-{ id: "gemini-2.5-flash",          weight: 4, provider: "gemini",   envKey: "GOOGLE_API_KEY" }
-{ id: "deepseek-v4-flash-20260423", weight: 4, provider: "deepseek", envKey: "DEEPSEEK_API_KEY" }
-{ id: "llama-3.3-70b-versatile",   weight: 3, provider: "groq",     envKey: "GROQ_API_KEY" }
-{ id: "llama-3.3-70b",             weight: 3, provider: "cerebras", envKey: "CEREBRAS_API_KEY" }
-{ id: "openai/gpt-oss-120b",       weight: 2, provider: "groq",     envKey: "GROQ_API_KEY" }
+```
+gemini-2.5-flash           | 1M | gemini
+deepseek-ai/deepseek-v4-flash | 1M | nvidia
+z-ai/glm-5.2               | 1M | nvidia
+nvidia/nemotron-3-super-120b-a12b | 1M | nvidia
+nvidia/nemotron-3-nano-30b-a3b  | 1M | nvidia
+llama-3.3-70b-versatile    | 131K | groq
+gpt-oss-120b               | 131K | cerebras
+openai/gpt-oss-120b        | 131K | groq
 ```
 
-## Context windows
+## Rutas virtuales
 
-| Modelo | Tokens |
-|--------|--------|
-| gemini-2.5-flash | 1,048,576 |
-| deepseek-v4-flash-20260423 | 1,000,000 |
-| llama-3.3-70b-versatile | 131,072 |
-| llama-3.3-70b | 131,072 |
-| openai/gpt-oss-120b | 131,072 |
+| Ruta | Modelos | Contexto |
+|------|---------|---------|
+| alpes-auto | Todos disponibles con key | min(contextWindow) del pool |
+| alpes-agent | Solo ≥1M (Gemini, NVIDIA) | min(1M) = 1_000_000 |
+| alpes-small | Solo ≤131K (NVIDIA Nano, Cerebras, Groq) | min(131K) = 131_072 |
 
-## URLs upstream
+## Archivos importantes
 
-- gemini: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`
-- deepseek: `https://api.deepseek.com/v1/chat/completions`
-- groq: `https://api.groq.com/openai/v1/chat/completions`
-- cerebras: `https://api.cerebras.ai/v1/chat/completions`
+| Archivo | Rol |
+|---------|-----|
+| `src/index.ts` | Handler principal |
+| `src/types.ts` | Interfaces |
+| `src/providers.ts` | Pool modelos, URLs |
+| `src/selector.ts` | Selección, health, throttle, affinity, cooldown |
+| `src/transformer.ts` | Request/Response builder |
+| `src/stats.ts` | Contador diario KV |
+| `src/utils.ts` | Utilidades |
+| `test/index.spec.ts` | Tests Vitest |
+| `docs/agent-reference.md` | Documentación detallada del proyecto |
+| `opencode.jsonc` | Configuración de OpenCode |
 
-Todos usan `Authorization: Bearer <key>` (formato OpenAI). Sin transformación de formato.
+## Prohibiciones
+
+- `wrangler deploy`, `git commit`, `git push` solo con orden explícita.
+- No mostrar secretos ni claves. Informar solo presente/ausente.
+- No eliminar datos o sesiones globales de OpenCode.

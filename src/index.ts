@@ -1,24 +1,39 @@
-import type { Env, IncomingRequest, ChatMessage, ProviderName, ModelEntry } from './types';
-import { getAvailableModels, getModelById, isAltKeyConfigured, getModelAltKeys } from './providers';
+import type { Env, IncomingRequest, ChatMessage, ProviderName, ModelEntry, VirtualRoute } from './types';
+import { getAvailableModels, getModelById, isAltKeyConfigured, getModelAltKeys, filterModelsByRoute, getVirtualContextWindow, ROUTE_WEIGHTS } from './providers';
 import {
 	selectWeightedModel,
-	selectFallbackModel,
 	markSuccess,
 	markRateLimited,
 	markError,
+	markResourceExhausted,
 	checkThrottle,
 	updateThrottle,
 	getHealthSnapshot,
+	filterAvailableModels,
+	selectFallbackModel,
+	selectNextUntriedModel,
+	selectModelForRoute,
+	updateAffinity,
 } from './selector';
-import { buildUpstreamRequest, buildProxyResponse } from './transformer';
+import { buildUpstreamRequest, buildProxyResponse, normalizeMessagesForModel } from './transformer';
 import { log, errorResponse } from './utils';
 import { incrementRequestCount, getTodayStats } from './stats';
 
 const UPSTREAM_TIMEOUT_MS = 25_000;
 
+const VIRTUAL_MODELS: VirtualRoute[] = ['alpes-auto', 'alpes-agent', 'alpes-small'];
+
+function isVirtualModel(model: string): model is VirtualRoute {
+	return VIRTUAL_MODELS.includes(model as VirtualRoute);
+}
+
 function isOpenCodeClient(request: Request): boolean {
 	const ua = request.headers.get('User-Agent') ?? '';
 	return ua.toLowerCase().includes('opencode') || request.headers.has('X-OpenCode-Session');
+}
+
+function getSessionId(request: Request): string | null {
+	return request.headers.get('X-OpenCode-Session');
 }
 
 function estimateTokenCount(messages: ChatMessage[]): number {
@@ -48,6 +63,21 @@ function maskAuthHeader(request: Request): string {
 		return 'Bearer ***';
 	}
 	return auth;
+}
+
+function isResourceExhausted(status: number, bodyText: string): boolean {
+	if (status === 429 || status === 502 || status === 503) {
+		const lower = bodyText.toLowerCase();
+		return (
+			lower.includes('resourceexhausted') ||
+			lower.includes('resource exhausted') ||
+			lower.includes('worker local total request limit reached') ||
+			lower.includes('total request limit reached') ||
+			lower.includes('quota exhausted') ||
+			lower.includes('capacity exhausted')
+		);
+	}
+	return false;
 }
 
 interface AttemptRecord {
@@ -118,157 +148,199 @@ export default {
 			return errorResponse('"messages" es requerido', 400, 'invalid_request');
 		}
 
-		// Detect OpenCode client
+		// Detect OpenCode client and session
 		const openCode = isOpenCodeClient(request);
+		const sessionId = getSessionId(request);
 		const userRequestedModel = incoming.model && incoming.model.trim().length > 0 ? incoming.model.trim() : null;
 
+		// Determine virtual route
+		let virtualRoute: VirtualRoute | null = null;
+		if (userRequestedModel && isVirtualModel(userRequestedModel)) {
+			virtualRoute = userRequestedModel;
+		}
+
 		// Get available models
-		const availableModels = getAvailableModels(env);
-		if (availableModels.length === 0) {
+		const allAvailableModels = getAvailableModels(env);
+		if (allAvailableModels.length === 0) {
 			log('ERROR', 'No hay modelos configurados (ninguna API key válida)');
 			return errorResponse('No hay proveedores de IA configurados', 503, 'no_providers');
 		}
 
+		// Filter models by virtual route
+		const routeModels = virtualRoute
+			? filterModelsByRoute(allAvailableModels, virtualRoute)
+			: allAvailableModels;
+
+		if (routeModels.length === 0) {
+			log('ERROR', `Ningún modelo disponible para ruta ${virtualRoute}`);
+			return errorResponse(`No hay modelos disponibles para ${virtualRoute}`, 503, 'no_models_for_route');
+		}
+
 		// Model selection
 		let targetModel: ModelEntry | null = null;
-		let useRotation = true;
+		let triedEntries = new Set<string>();
+		let triedModelIds = new Set<string>();
+		let fallbackCount = 0;
+		const errors: AttemptRecord[] = [];
 
-		if (openCode && userRequestedModel) {
-			targetModel = getModelById(userRequestedModel) ?? null;
+		if (userRequestedModel && isVirtualModel(userRequestedModel)) {
+			// Virtual route: select with affinity and route-specific weights
+			const routeWeights = virtualRoute ? ROUTE_WEIGHTS[virtualRoute] : undefined;
+			targetModel = selectModelForRoute(routeModels, virtualRoute, sessionId, triedEntries, routeWeights);
 			if (!targetModel) {
-				// If OpenCode requested a model not in our pool, try to use any available model
-				log('WARN', `OpenCode solicitó modelo "${userRequestedModel}" no en pool, usando selección automática`);
-				targetModel = selectWeightedModel(availableModels);
-			} else if (!availableModels.some((m) => m.id === targetModel!.id)) {
-				// Model is in pool but its key is not configured
-				log('WARN', `OpenCode solicitó modelo "${userRequestedModel}" sin API key configurada, usando selección automática`);
-				targetModel = selectWeightedModel(availableModels);
-			} else {
-				useRotation = false;
+				return errorResponse('No se pudo seleccionar un modelo', 503, 'no_models');
+			}
+		} else if (userRequestedModel) {
+			// Explicit model requested
+			targetModel = getModelById(userRequestedModel) ?? null;
+			if (!targetModel || !allAvailableModels.some((m) => m.id === targetModel!.id)) {
+				log('WARN', `Modelo "${userRequestedModel}" no disponible, selección automática`);
+				targetModel = selectWeightedModel(routeModels);
 			}
 		} else {
-			targetModel = selectWeightedModel(availableModels);
+			// No model specified
+			targetModel = selectWeightedModel(routeModels);
 		}
 
 		if (!targetModel) {
 			return errorResponse('No se pudo seleccionar un modelo', 503, 'no_models');
 		}
 
+		// Compute context window for overflow check
+		const overflowCheckWindow = virtualRoute
+			? getVirtualContextWindow(allAvailableModels, virtualRoute)
+			: targetModel.contextWindow;
+
 		// Context overflow check
-		/*
-        const overflow = checkContextOverflow(incoming.messages, targetModel.contextWindow);
-        if (overflow.overflow) {
-            log('WARN', 'Context overflow detectado antes de enviar', {
-                model: targetModel.id,
-                estimated: overflow.estimated,
-                threshold: overflow.threshold,
-            });
-            return new Response(
-                JSON.stringify({
-                    error: {
-                        message: `Contexto demasiado grande para ${targetModel.id}: ~${overflow.estimated} tokens estimados, máximo ${overflow.threshold}`,
-                        type: 'context_too_large',
-                        code: 'context_too_large',
-                    },
-                }),
-                {
-                    status: 400,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*',
-                        'X-Reason': 'context-too-large-for-model',
-                        'X-Model-Used': targetModel.id,
-                        'X-Provider-Used': targetModel.provider,
-                        'X-Model-Context-Window': String(targetModel.contextWindow),
-                    },
-                },
-            );
-        }
-        */
+		const overflow = checkContextOverflow(incoming.messages, overflowCheckWindow);
+		if (overflow.overflow) {
+			log('WARN', 'Context overflow detectado antes de enviar', {
+				route: virtualRoute,
+				model: targetModel.id,
+				estimated: overflow.estimated,
+				threshold: overflow.threshold,
+				contextWindow: overflowCheckWindow,
+			});
+			return new Response(
+				JSON.stringify({
+					error: {
+						message: `Contexto demasiado grande: ~${overflow.estimated} tokens estimados, máximo ${overflow.threshold} para contexto ${overflowCheckWindow}`,
+						type: 'context_too_large',
+						code: 'context_too_large',
+					},
+				}),
+				{
+					status: 400,
+					headers: {
+						'Content-Type': 'application/json',
+						'Access-Control-Allow-Origin': '*',
+						'X-Reason': 'context-too-large-for-model',
+						'X-Model-Context-Window': String(overflowCheckWindow),
+					},
+				},
+			);
+		}
 
-		// Failover loop
-		const errors: AttemptRecord[] = [];
-		let fallbackCount = 0;
-		let currentModel: ModelEntry | null = targetModel;
-		let triedEntries = new Set<string>();
+		// Failover loop — max one attempt per model
+		while (targetModel && triedModelIds.size < routeModels.length) {
+			if (triedModelIds.has(targetModel.id)) {
+				targetModel = selectNextUntriedModel(targetModel.id, routeModels, triedModelIds);
+				continue;
+			}
 
-		while (currentModel && errors.length < availableModels.length * 2) {
-			const envKeysToTry = [currentModel.envKey];
-
-			// Add alt keys for this provider if configured and available
-			const altKeys = getModelAltKeys(currentModel);
-			const configuredAltKeys = isAltKeyConfigured(currentModel.provider, env, altKeys);
+			const envKeysToTry = [targetModel.envKey];
+			const altKeys = getModelAltKeys(targetModel);
+			const configuredAltKeys = isAltKeyConfigured(targetModel.provider, env, altKeys);
 			envKeysToTry.push(...configuredAltKeys);
 
 			for (const envKey of envKeysToTry) {
-				const attemptKey = `${currentModel.id}:${envKey}`;
+				const attemptKey = `${targetModel.id}:${envKey}`;
 				if (triedEntries.has(attemptKey)) continue;
 				triedEntries.add(attemptKey);
 
-				// Throttle check
-				const waitMs = checkThrottle(currentModel.provider);
+				// Throttle check (per provider)
+				const waitMs = checkThrottle(targetModel.provider);
 				if (waitMs !== null) {
 					await new Promise((r) => setTimeout(r, waitMs));
 				}
-				updateThrottle(currentModel.provider);
+				updateThrottle(targetModel.provider);
 
 				const controller = new AbortController();
 				const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
 				try {
-					const upstreamReq = buildUpstreamRequest(currentModel, envKey, incoming, env, controller.signal);
+					const normalizedMessages = normalizeMessagesForModel(incoming.messages);
+					const normalizedIncoming = { ...incoming, messages: normalizedMessages };
+					const upstreamReq = buildUpstreamRequest(targetModel, envKey, normalizedIncoming, env, controller.signal);
 					const response = await fetch(upstreamReq);
+
+					const responseBody = await response.text();
+
+					// ResourceExhausted
+					if (isResourceExhausted(response.status, responseBody)) {
+						markResourceExhausted(targetModel.provider, targetModel.id);
+						const reason = `ResourceExhausted (${targetModel.provider}/${targetModel.id})`;
+						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
+						fallbackCount++;
+						log('WARN', `ResourceExhausted en ${targetModel.id}`, { provider: targetModel.provider });
+						continue;
+					}
 
 					// Rate limited
 					if (response.status === 429) {
-						markRateLimited(currentModel.provider);
-						const reason = `429 rate limited (${currentModel.provider})`;
-						errors.push({ model: currentModel.id, provider: currentModel.provider, reason });
+						markRateLimited(targetModel.provider, targetModel.id);
+						const reason = `429 rate limited (${targetModel.provider}/${targetModel.id})`;
+						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
 						fallbackCount++;
-						log('WARN', `429 en ${currentModel.id} (key: ${envKey})`, { provider: currentModel.provider });
+						log('WARN', `429 en ${targetModel.id} (key: ${envKey})`, { provider: targetModel.provider });
 						continue;
 					}
 
-					// Upstream error (500+ o 404 Not Found)
+					// Upstream error (500+ or 404 Not Found)
 					if (response.status >= 500 || response.status === 404) {
-						markError(currentModel.provider);
-						const reason = `${response.status} ${response.statusText} (${currentModel.provider})`;
-						errors.push({ model: currentModel.id, provider: currentModel.provider, reason });
+						markError(targetModel.provider, targetModel.id);
+						const reason = `${response.status} ${response.statusText} (${targetModel.provider}/${targetModel.id})`;
+						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
 						fallbackCount++;
-						log('WARN', `Error ${response.status} en ${currentModel.id}`, { provider: currentModel.provider });
+						log('WARN', `Error ${response.status} en ${targetModel.id}`, { provider: targetModel.provider });
 						continue;
 					}
 
-					// 400 context_length_exceeded o Model Not Found
+					// 400 context_length_exceeded or Model Not Found
 					if (response.status === 400) {
-						const body = await response.text();
-						const bodyLower = body.toLowerCase();
+						const bodyLower = responseBody.toLowerCase();
 						const isContextError =
 							bodyLower.includes('context_length') || bodyLower.includes('too large') || bodyLower.includes('maximum context');
 						const isModelError = bodyLower.includes('does not exist') || bodyLower.includes('not found') || bodyLower.includes('model');
+						const isReasoningError =
+							bodyLower.includes('reasoning_content') || bodyLower.includes('reasoning content');
 
-						if (isContextError || isModelError) {
-							const reason = `400 ${isContextError ? 'context_length_exceeded' : 'model_not_found'} (${currentModel.provider})`;
-							errors.push({ model: currentModel.id, provider: currentModel.provider, reason });
+						if (isContextError || isModelError || isReasoningError) {
+							const reason = isReasoningError
+								? `400 reasoning_content (${targetModel.provider}/${targetModel.id})`
+								: `400 ${isContextError ? 'context_length_exceeded' : 'model_not_found'} (${targetModel.provider}/${targetModel.id})`;
+							errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
 							fallbackCount++;
-							log('WARN', `Error 400 en ${currentModel.id}: ${isContextError ? 'Contexto' : 'Modelo no encontrado'}`, {
-								provider: currentModel.provider,
-							});
-							continue; // <-- Esto hace que intente con el siguiente modelo
+							if (isModelError || isReasoningError) {
+								markError(targetModel.provider, targetModel.id);
+							}
+							log('WARN', `Error 400 en ${targetModel.id}`, { provider: targetModel.provider });
+							continue;
 						}
+
 						// Non-context 400: return to client
-						markError(currentModel.provider);
+						markError(targetModel.provider, targetModel.id);
 						const proxyResponse = buildProxyResponse(
-							new Response(body, { status: 400, headers: { 'Content-Type': 'application/json' } }),
-							currentModel.id,
-							currentModel.provider,
-							currentModel.contextWindow,
+							new Response(responseBody, { status: 400, headers: { 'Content-Type': 'application/json' } }),
+							targetModel.id,
+							targetModel.provider,
+							targetModel.contextWindow,
 							null,
 							fallbackCount,
 						);
 						log('INFO', 'Request completado (400 no-context)', {
-							model: currentModel.id,
-							provider: currentModel.provider,
+							model: targetModel.id,
+							provider: targetModel.provider,
 							status: 400,
 							fallbackCount,
 							durationMs: Date.now() - startTime,
@@ -277,22 +349,28 @@ export default {
 					}
 
 					// Success
-					markSuccess(currentModel.provider);
+					markSuccess(targetModel.provider, targetModel.id);
 					ctx.waitUntil(incrementRequestCount(env));
+
+					// Update affinity on success
+					if (virtualRoute && sessionId) {
+						updateAffinity(sessionId, virtualRoute, targetModel.id, targetModel.provider);
+					}
 
 					const retryReason = errors.length > 0 ? errors.map((e) => e.reason).join('; ') : null;
 					const proxyResponse = buildProxyResponse(
-						response,
-						currentModel.id,
-						currentModel.provider,
-						currentModel.contextWindow,
+						new Response(responseBody, { status: response.status, statusText: response.statusText, headers: response.headers }),
+						targetModel.id,
+						targetModel.provider,
+						targetModel.contextWindow,
 						retryReason,
 						fallbackCount,
 					);
 
 					log('INFO', 'Request completado', {
-						model: currentModel.id,
-						provider: currentModel.provider,
+						route: virtualRoute,
+						model: targetModel.id,
+						provider: targetModel.provider,
 						status: response.status,
 						openCode,
 						fallbackCount,
@@ -303,31 +381,27 @@ export default {
 				} catch (err) {
 					const isTimeout = err instanceof DOMException && err.name === 'AbortError';
 					const reason = isTimeout
-						? `timeout (${currentModel.provider})`
-						: `error: ${err instanceof Error ? err.message : 'desconocido'} (${currentModel.provider})`;
-					errors.push({ model: currentModel.id, provider: currentModel.provider, reason });
+						? `timeout (${targetModel.provider}/${targetModel.id})`
+						: `error: ${err instanceof Error ? err.message : 'desconocido'} (${targetModel.provider}/${targetModel.id})`;
+					errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
 					fallbackCount++;
-					markError(currentModel.provider);
-					log('WARN', `Fallo en ${currentModel.id}`, { provider: currentModel.provider, error: reason });
+					markError(targetModel.provider, targetModel.id);
+					log('WARN', `Fallo en ${targetModel.id}`, { provider: targetModel.provider, error: reason });
 				} finally {
 					clearTimeout(timeoutId);
 				}
 			}
 
-			// Move to next model in pool
-			if (useRotation) {
-				currentModel = selectFallbackModel(currentModel!.id, availableModels);
-			} else {
-				// OpenCode locked to a model: try to find any other available model
-				const otherModels = availableModels.filter((m) => m.id !== currentModel!.id);
-				currentModel = selectWeightedModel(otherModels);
-				useRotation = true; // After first failure, allow rotation
-			}
+			// Mark model as tried and move to next eligible
+			triedModelIds.add(targetModel.id);
+			triedEntries.add(targetModel.id);
+			targetModel = selectNextUntriedModel(targetModel.id, routeModels, triedModelIds);
 		}
 
 		// All attempts failed
 		const lastErrors = errors.slice(-3).map((e) => `${e.provider}/${e.model}: ${e.reason}`);
 		log('ERROR', 'Todos los proveedores fallaron', {
+			route: virtualRoute,
 			errors: errors.length,
 			lastErrors,
 			durationMs: Date.now() - startTime,

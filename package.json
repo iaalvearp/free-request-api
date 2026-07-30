@@ -7,6 +7,10 @@
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"test": "vitest",
+		"test:run": "vitest run",
+		"typecheck": "tsc --noEmit",
+		"test:nvidia": "node scripts/check-nvidia-models.mjs",
+		"test:cerebras": "node scripts/check-cerebras-model.mjs",
 		"cf-typegen": "wrangler types"
 	},
 	"devDependencies": {

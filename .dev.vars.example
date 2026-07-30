@@ -10,8 +10,8 @@ CUSTOM_API_KEY=
 # Google AI Studio — Gemini 2.5 Flash
 GOOGLE_API_KEY=
 
-# DeepSeek Platform
-DEEPSEEK_API_KEY=
+# NVIDIA NIM — Una clave para todos los modelos NVIDIA
+NVIDIA_API_KEY=
 
 # Groq
 GROQ_API_KEY=

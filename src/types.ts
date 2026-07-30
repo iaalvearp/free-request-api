@@ -1,6 +1,13 @@
 export interface ChatMessage {
-	role: 'user' | 'assistant' | 'system';
+	role: string;
 	content: string;
+	reasoning_content?: unknown;
+	reasoning?: unknown;
+	thinking?: unknown;
+	tool_calls?: unknown[];
+	tool_call_id?: string;
+	function_call?: Record<string, unknown>;
+	[key: string]: unknown;
 }
 
 export interface IncomingRequest {
@@ -8,13 +15,22 @@ export interface IncomingRequest {
 	messages: ChatMessage[];
 	stream?: boolean;
 	temperature?: number;
+	top_p?: number;
 	max_tokens?: number;
 	tools?: unknown[];
 	tool_choice?: unknown;
 	[key: string]: unknown;
 }
 
-export type ProviderName = 'gemini' | 'deepseek' | 'groq' | 'cerebras';
+export type ProviderName = 'gemini' | 'nvidia' | 'groq' | 'cerebras';
+
+export type VirtualRoute = 'alpes-auto' | 'alpes-agent' | 'alpes-small';
+
+export interface AffinityEntry {
+	modelId: string;
+	provider: ProviderName;
+	timestamp: number;
+}
 
 export interface ModelEntry {
 	id: string;
@@ -42,7 +58,7 @@ export interface Env {
 	CUSTOM_API_KEY: string;
 	ENVIRONMENT: string;
 	GOOGLE_API_KEY: string;
-	DEEPSEEK_API_KEY: string;
+	NVIDIA_API_KEY: string;
 	GROQ_API_KEY: string;
 	CEREBRAS_API_KEY: string;
 	PROXY_STATS: KVNamespace;

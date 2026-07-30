@@ -1,7 +1,7 @@
 # free-request-api
 
 > Proxy de IA multi-proveedor en Cloudflare Workers. Endpoint compatible con OpenAI en `/v1/chat/completions`.
-> Rotación inteligente entre Gemini, DeepSeek, Groq y Cerebras.
+> Rotación inteligente entre Gemini, NVIDIA, Groq y Cerebras.
 
 ## Requisitos
 
@@ -22,7 +22,7 @@ pnpm run dev                      # http://localhost:8787
 ```bash
 npx wrangler secret put CUSTOM_API_KEY
 npx wrangler secret put GOOGLE_API_KEY
-npx wrangler secret put DEEPSEEK_API_KEY
+npx wrangler secret put NVIDIA_API_KEY
 npx wrangler secret put GROQ_API_KEY
 npx wrangler secret put CEREBRAS_API_KEY
 ```
@@ -44,7 +44,7 @@ curl -X POST http://localhost:8787/v1/chat/completions \
 
 Headers de respuesta:
 - `X-Model-Used` — modelo real que respondió
-- `X-Provider-Used` — proveedor (`gemini`, `deepseek`, `groq`, `cerebras`)
+- `X-Provider-Used` — proveedor (`gemini`, `nvidia`, `groq`, `cerebras`)
 - `X-Model-Context-Window` — contexto máximo del modelo
 - `X-Fallback-Count` — número de fallbacks antes del éxito
 - `X-Retry-Reason` — motivo del fallback (si hubo)
@@ -66,9 +66,19 @@ curl -X POST http://localhost:8787/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hola"}]}'
 ```
 
+### Modelo virtual `alpes-auto`
+
+```bash
+# Usa rotación ponderada entre todos los modelos disponibles
+curl -X POST http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer $CUSTOM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hola"}],"model":"alpes-auto"}'
+```
+
 ### `GET /health`
 
-Estado de cada proveedor (último éxito, 429s, cooldown):
+Estado de cada modelo (último éxito, 429s, cooldown):
 
 ```bash
 curl http://localhost:8787/health
@@ -87,7 +97,7 @@ curl -H "Authorization: Bearer $CUSTOM_API_KEY" http://localhost:8787/stats
 | Proveedor | URL | Contexto |
 |-----------|-----|----------|
 | Google Gemini | `generativelanguage.googleapis.com` | 1M tokens |
-| DeepSeek | `api.deepseek.com` | 1M tokens |
+| NVIDIA NIM | `integrate.api.nvidia.com` | 1M tokens |
 | Groq | `api.groq.com` | 128K tokens |
 | Cerebras | `api.cerebras.ai` | 128K tokens |
 
@@ -96,9 +106,11 @@ curl -H "Authorization: Bearer $CUSTOM_API_KEY" http://localhost:8787/stats
 | Modelo | Peso | Provider |
 |--------|------|----------|
 | `gemini-2.5-flash` | 4 | gemini |
-| `deepseek-v4-flash-20260423` | 4 | deepseek |
+| `deepseek-ai/deepseek-v4-flash` | 5 | nvidia |
+| `z-ai/glm-5.2` | 4 | nvidia |
+| `nvidia/nemotron-3-super-120b-a12b` | 3 | nvidia |
 | `llama-3.3-70b-versatile` | 3 | groq |
-| `llama-3.3-70b` | 3 | cerebras |
+| `gpt-oss-120b` (Cerebras) | 3 | cerebras |
 | `openai/gpt-oss-120b` | 2 | groq |
 
 ## Logging
@@ -111,6 +123,6 @@ Cada request loggea: `{model, provider, status, openCode, fallbackCount, duratio
 
 ## Monitoreo
 
-- `/health` — estado actual de cada provider
+- `/health` — estado actual de cada modelo
 - `/stats` — uso diario contra el límite de Cloudflare
 - Dashboard Cloudflare → Workers → free-request-api → Metrics

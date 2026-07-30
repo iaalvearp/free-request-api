@@ -160,6 +160,9 @@ dist
 
 # wrangler project
 
+# Local runtime data (logs, PID, temp verification)
+.local/
+
 .dev.vars*
 !.dev.vars.example
 .env*

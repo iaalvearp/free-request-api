@@ -1,5 +1,19 @@
-import type { ModelEntry, ProviderName, IncomingRequest, Env } from './types';
+import type { ModelEntry, ProviderName, IncomingRequest, Env, ChatMessage } from './types';
 import { PROVIDERS } from './providers';
+
+export function normalizeMessagesForModel(messages: ChatMessage[]): ChatMessage[] {
+	return messages.map((msg) => {
+		if (msg.role !== 'assistant') return { ...msg };
+		const normalized: Record<string, unknown> = {
+			role: 'assistant',
+			content: msg.content,
+		};
+		if (msg.tool_calls) normalized.tool_calls = msg.tool_calls;
+		if (msg.function_call) normalized.function_call = msg.function_call;
+		if (msg.tool_call_id) normalized.tool_call_id = msg.tool_call_id;
+		return normalized as ChatMessage;
+	});
+}
 
 export function buildUpstreamRequest(
 	model: ModelEntry,
@@ -16,16 +30,29 @@ export function buildUpstreamRequest(
 		'Authorization': `Bearer ${apiKey}`,
 	};
 
+	// Nemotron-specific defaults when client doesn't provide them
+	const isNemotronSuper = model.id === 'nvidia/nemotron-3-super-120b-a12b';
+	const isNemotronNano = model.id === 'nvidia/nemotron-3-nano-30b-a3b';
+	const temperature = incoming.temperature ?? (isNemotronNano ? 0.6 : isNemotronSuper ? 1.0 : 0.7);
+	const top_p = incoming.top_p ?? (isNemotronNano || isNemotronSuper ? 0.95 : undefined);
+
 	const body: Record<string, unknown> = {
 		model: model.id,
 		messages: incoming.messages,
 		stream: incoming.stream ?? false,
-		temperature: incoming.temperature ?? 0.7,
+		temperature,
 		max_tokens: incoming.max_tokens ?? 4096,
 	};
 
+	if (top_p !== undefined) body.top_p = top_p;
+	if (isNemotronNano) body.chat_template_kwargs = { enable_thinking: false };
 	if (incoming.tools) body.tools = incoming.tools;
 	if (incoming.tool_choice) body.tool_choice = incoming.tool_choice;
+
+	const isCerebrasGPTOSS = model.id === 'gpt-oss-120b' && model.provider === 'cerebras';
+	if (isCerebrasGPTOSS) {
+		body.reasoning_effort = incoming.reasoning_effort ?? 'low';
+	}
 
 	return new Request(providerConfig.url, {
 		method: 'POST',
