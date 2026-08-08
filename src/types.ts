@@ -62,5 +62,6 @@ export interface Env {
 	GROQ_API_KEY: string;
 	CEREBRAS_API_KEY: string;
 	PROXY_STATS: KVNamespace;
+	MODEL_ANALYTICS: AnalyticsEngineDataset;
 	[key: string]: unknown;
 }

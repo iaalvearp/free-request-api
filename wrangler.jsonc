@@ -11,6 +11,12 @@
 	"vars": {
 		"ENVIRONMENT": "development",
 	},
+	"analytics_engine_datasets": [
+		{
+			"binding": "MODEL_ANALYTICS",
+			"dataset": "free_request_api_model_health"
+		}
+	],
 	"kv_namespaces": [
 		{
 			"binding": "PROXY_STATS",

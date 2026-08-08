@@ -19,6 +19,7 @@ import {
 } from './selector';
 import { buildUpstreamRequest, buildProxyResponse, normalizeMessagesForModel } from './transformer';
 import { log, errorResponse } from './utils';
+import { logModelHealthEvent } from './telemetry';
 import { incrementRequestCount, getTodayStats } from './stats';
 
 const UPSTREAM_TIMEOUT_MS = 25_000;
@@ -185,6 +186,27 @@ export default {
 		let triedModelIds = new Set<string>();
 		let fallbackCount = 0;
 		const errors: AttemptRecord[] = [];
+		const streaming = incoming.stream ?? false;
+		let attemptStart = Date.now();
+
+		const logAttempt = (
+			model: ModelEntry,
+			result: 'success' | 'failure',
+			errorType?: string,
+			httpStatus?: number,
+		) => {
+			logModelHealthEvent(env, {
+				model: model.id,
+				provider: model.provider,
+				route: virtualRoute ?? 'direct',
+				result,
+				errorType,
+				httpStatus,
+				durationMs: Date.now() - attemptStart,
+				fallbackIndex: fallbackCount,
+				streaming,
+			});
+		};
 
 		if (userRequestedModel && isVirtualModel(userRequestedModel)) {
 			// Virtual route: select with affinity and route-specific weights
@@ -275,6 +297,7 @@ export default {
 				const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
 				try {
+					attemptStart = Date.now();
 					const normalizedMessages = normalizeMessagesForModel(incoming.messages);
 					const normalizedIncoming = { ...incoming, messages: normalizedMessages };
 					const upstreamReq = buildUpstreamRequest(targetModel, envKey, normalizedIncoming, env, controller.signal);
@@ -284,6 +307,7 @@ export default {
 
 					// If streaming, mark success before returning the ReadableStream
 					if (isStreaming && response.status === 200 && response.body !== null) {
+						logAttempt(targetModel, 'success', undefined, response.status);
 						markSuccess(targetModel.provider, targetModel.id);
 						ctx.waitUntil(incrementRequestCount(env));
 						if (virtualRoute && sessionId) {
@@ -318,6 +342,7 @@ export default {
 
 					// ResourceExhausted
 					if (isResourceExhausted(response.status, responseBody)) {
+						logAttempt(targetModel, 'failure', 'resource_exhausted', response.status);
 						markResourceExhausted(targetModel.provider, targetModel.id);
 						const reason = `ResourceExhausted (${targetModel.provider}/${targetModel.id})`;
 						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
@@ -328,6 +353,7 @@ export default {
 
 					// Rate limited
 					if (response.status === 429) {
+						logAttempt(targetModel, 'failure', 'rate_limit', 429);
 						markRateLimited(targetModel.provider, targetModel.id);
 						const reason = `429 rate limited (${targetModel.provider}/${targetModel.id})`;
 						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
@@ -338,6 +364,7 @@ export default {
 
 					// Modelo retirado (HTTP 410 Gone): no devolver al cliente si hay otros modelos elegibles
 					if (response.status === 410) {
+						logAttempt(targetModel, 'failure', 'retired', 410);
 						markRetired(targetModel.provider, targetModel.id);
 						const reason = `410 gone (${targetModel.provider}/${targetModel.id})`;
 						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
@@ -348,6 +375,7 @@ export default {
 
 					// Upstream error (500+ or 404 Not Found)
 					if (response.status >= 500 || response.status === 404 || response.body === null) { // Added response.body === null
+						logAttempt(targetModel, 'failure', 'http_error', response.status);
 						markError(targetModel.provider, targetModel.id);
 						const reason = `${response.status} ${response.statusText} (${targetModel.provider}/${targetModel.id})`;
 						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
@@ -366,6 +394,12 @@ export default {
 							bodyLower.includes('reasoning_content') || bodyLower.includes('reasoning content');
 
 						if (isContextError || isModelError || isReasoningError) {
+							logAttempt(
+								targetModel,
+								'failure',
+								isContextError ? 'context_error' : 'http_error',
+								400,
+							);
 							const reason = isReasoningError
 								? `400 reasoning_content (${targetModel.provider}/${targetModel.id})`
 								: `400 ${isContextError ? 'context_length_exceeded' : 'model_not_found'} (${targetModel.provider}/${targetModel.id})`;
@@ -379,6 +413,7 @@ export default {
 						}
 
 						// Non-context 400: return to client
+						logAttempt(targetModel, 'failure', 'http_error', 400);
 						markError(targetModel.provider, targetModel.id);
 						const proxyResponse = buildProxyResponse(
 							new Response(responseBody, { status: 400, headers: { 'Content-Type': 'application/json' } }),
@@ -400,6 +435,7 @@ export default {
 					}
 
 					// This block is for non-streaming, successful responses
+					logAttempt(targetModel, 'success', undefined, response.status);
 					markSuccess(targetModel.provider, targetModel.id); // Already marked above for streaming, but safe to re-mark for non-streaming
 					ctx.waitUntil(incrementRequestCount(env));
 
@@ -431,6 +467,7 @@ new Response(responseBody, { status: response.status, statusText: response.statu
 					return proxyResponse;
 				} catch (err) {
 					const isTimeout = err instanceof DOMException && err.name === 'AbortError';
+					logAttempt(targetModel, 'failure', isTimeout ? 'timeout' : 'network_error');
 					const reason = isTimeout
 						? `timeout (${targetModel.provider}/${targetModel.id})`
 						: `error: ${err instanceof Error ? err.message : 'desconocido'} (${targetModel.provider}/${targetModel.id})`;

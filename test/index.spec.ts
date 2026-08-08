@@ -77,7 +77,18 @@ function installMockFetch(responses: Array<{ status: number; body?: string; stat
 	return { mock, calls };
 }
 
-function createMockEnv(overrides: Partial<Record<string, string>> = {}) {
+function createMockEnv(overrides: Partial<Record<string, unknown>> = {}) {
+	const analyticsDataPoints: Array<{
+		indexes?: (string | null)[];
+		blobs?: (string | null)[];
+		doubles?: number[];
+	}> = [];
+	const MODEL_ANALYTICS = {
+		dataPoints: analyticsDataPoints,
+		writeDataPoint(dataPoint: { indexes?: (string | null)[]; blobs?: (string | null)[]; doubles?: number[] }) {
+			analyticsDataPoints.push(dataPoint);
+		},
+	};
 	return {
 		CUSTOM_API_KEY: 'test-key',
 		ENVIRONMENT: 'test',
@@ -89,6 +100,7 @@ function createMockEnv(overrides: Partial<Record<string, string>> = {}) {
 			get: vi.fn().mockResolvedValue(null),
 			put: vi.fn().mockResolvedValue(undefined),
 		},
+		MODEL_ANALYTICS,
 		...overrides,
 	};
 }
@@ -1767,6 +1779,193 @@ describe('free-request-api Worker', () => {
 			expect(calls.length).toBe(1);
 			expect(calls[0].model).not.toBe('gemini-2.5-flash');
 			expect(res.status).toBe(200);
+		});
+	});
+
+	// ── Telemetry (Workers Analytics Engine) ───────────────────
+	describe('Telemetry (Workers Analytics Engine)', () => {
+		beforeEach(() => {
+			vi.spyOn(Math, 'random').mockReturnValue(0);
+			resetAllHealth();
+		});
+
+		function getDataPoints(env: ReturnType<typeof createMockEnv>): Array<{
+			indexes?: (string | null)[];
+			blobs?: (string | null)[];
+			doubles?: number[];
+		}> {
+			return (env.MODEL_ANALYTICS as any).dataPoints;
+		}
+
+		function makeReq(model?: string, stream?: boolean): IncomingRequest {
+			return new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({
+					messages: [{ role: 'user', content: 'telemetry-test-prompt' }],
+					model,
+					stream,
+				}),
+			});
+		}
+
+		it('éxito genera un evento success', async () => {
+			const env = createMockEnv();
+			const ctx = createExecutionContext();
+			installMockFetch([{ status: 200 }]);
+			const res = await worker.fetch(makeReq(), env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+
+			const dps = getDataPoints(env);
+			expect(dps.length).toBe(1);
+			const dp = dps[0];
+			expect(dp.indexes).toEqual(['gemini-2.5-flash']);
+			expect(dp.blobs).toEqual(['gemini', 'gemini-2.5-flash', 'direct', 'success', '', 'false']);
+			expect(dp.doubles![0]).toBe(200);
+			expect(dp.doubles![2]).toBe(0);
+			expect(typeof dp.doubles![1]).toBe('number');
+			expect(Object.keys(dp).sort()).toEqual(['blobs', 'doubles', 'indexes']);
+		});
+
+		it('ruta virtual se registra como alpes-small', async () => {
+			const env = createMockEnv();
+			const ctx = createExecutionContext();
+			installMockFetch([{ status: 200 }]);
+			const res = await worker.fetch(makeReq('alpes-small'), env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+
+			const dps = getDataPoints(env);
+			expect(dps.length).toBe(1);
+			expect(dps[0].blobs![2]).toBe('alpes-small');
+		});
+
+		it('timeout genera un evento failure con errorType timeout', async () => {
+			const mock = vi
+				.fn()
+				.mockImplementationOnce(async () => {
+					throw new DOMException('The operation was aborted', 'AbortError');
+				})
+				.mockImplementationOnce(async () =>
+					new Response(openAIResponse('z-ai/glm-5.2'), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
+			vi.stubGlobal('fetch', mock);
+
+			const env = createMockEnv();
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(makeReq(), env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+
+			const dps = getDataPoints(env);
+			expect(dps.length).toBe(2);
+			expect(dps[0].indexes).toEqual(['gemini-2.5-flash']);
+			expect(dps[0].blobs).toEqual(['gemini', 'gemini-2.5-flash', 'direct', 'failure', 'timeout', 'false']);
+			expect(dps[0].doubles![0]).toBe(0);
+		});
+
+		it('429 queda identificado como rate_limit', async () => {
+			const env = createMockEnv();
+			const ctx = createExecutionContext();
+			installMockFetch([{ status: 429 }, { status: 200 }]);
+			const res = await worker.fetch(makeReq(), env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+
+			const dps = getDataPoints(env);
+			expect(dps.length).toBe(2);
+			expect(dps[0].blobs![3]).toBe('failure');
+			expect(dps[0].blobs![4]).toBe('rate_limit');
+			expect(dps[0].doubles![0]).toBe(429);
+			expect(dps[1].blobs![3]).toBe('success');
+		});
+
+		it('410 queda identificado como retired', async () => {
+			const goneBody = JSON.stringify({ error: { message: 'end of life' } });
+			const env = createMockEnv();
+			const ctx = createExecutionContext();
+			installMockFetch([{ status: 410, body: goneBody }, { status: 200 }]);
+			const res = await worker.fetch(makeReq(), env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+
+			const dps = getDataPoints(env);
+			expect(dps.length).toBe(2);
+			expect(dps[0].blobs![3]).toBe('failure');
+			expect(dps[0].blobs![4]).toBe('retired');
+			expect(dps[0].doubles![0]).toBe(410);
+		});
+
+		it('failover genera un evento por cada modelo intentado', async () => {
+			const env = createMockEnv();
+			const ctx = createExecutionContext();
+			installMockFetch([{ status: 503 }, { status: 200 }]);
+			const res = await worker.fetch(makeReq(), env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+
+			const dps = getDataPoints(env);
+			expect(dps.length).toBe(2);
+			expect(dps[0].indexes).toEqual(['gemini-2.5-flash']);
+			expect(dps[0].blobs).toEqual(['gemini', 'gemini-2.5-flash', 'direct', 'failure', 'http_error', 'false']);
+			expect(dps[0].doubles).toEqual([503, expect.any(Number), 0]);
+			expect(dps[1].indexes).toEqual(['z-ai/glm-5.2']);
+			expect(dps[1].blobs![3]).toBe('success');
+			expect(dps[1].doubles![2]).toBe(1);
+		});
+
+		it('fallo del propio Analytics Engine NO rompe la petición', async () => {
+			const env = createMockEnv({
+				MODEL_ANALYTICS: {
+					writeDataPoint: () => {
+						throw new Error('analytics exploded');
+					},
+				},
+			});
+			const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const ctx = createExecutionContext();
+			installMockFetch([{ status: 200 }]);
+			const res = await worker.fetch(makeReq(), env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+			const body = await res.text();
+			expect(body).toContain('OK');
+			expect(errorSpy).toHaveBeenCalled();
+			errorSpy.mockRestore();
+		});
+
+		it('no se almacena contenido del prompt, respuesta ni secretos', async () => {
+			const env = createMockEnv({
+				GOOGLE_API_KEY: 'super-secret-google-key-123456',
+				NVIDIA_API_KEY: 'super-secret-nvidia-key-654321',
+			});
+			const ctx = createExecutionContext();
+			installMockFetch([{ status: 200 }]);
+			const res = await worker.fetch(makeReq('gemini-2.5-flash'), env, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+
+			const dps = getDataPoints(env);
+			expect(dps.length).toBe(1);
+			const dp = dps[0];
+			const json = JSON.stringify(dp);
+
+			// No secretos ni contenido
+			expect(json).not.toContain('super-secret-client-key');
+			expect(json).not.toContain('super-secret-google-key');
+			expect(json).not.toContain('super-secret-nvidia-key');
+			expect(json).not.toContain('telemetry-test-prompt');
+			expect(json).not.toContain('OK');
+
+			// Estructura exacta: indexes, blobs, doubles (sin dataset ni event)
+			expect(Object.keys(dp).sort()).toEqual(['blobs', 'doubles', 'indexes']);
+			expect(dp.indexes!.length).toBe(1);
+			expect(dp.blobs!.length).toBe(6);
+			expect(dp.doubles!.length).toBe(3);
 		});
 	});
 });
