@@ -9,6 +9,7 @@ const THROTTLE_MS = 1000;
 const healthMap = new Map<string, ProviderHealth>();
 const throttleMap = new Map<string, number>();
 const affinityMap = new Map<string, AffinityEntry>();
+const retiredModels = new Set<string>();
 
 function getHealthKey(provider: string, modelId?: string): string {
 	return modelId ? `${provider}:${modelId}` : provider;
@@ -62,6 +63,24 @@ export function markResourceExhausted(providerName: ProviderName, modelId?: stri
 	h.consecutiveFailures++;
 	h.cooldownUntil = Date.now() + COOLDOWN_RESOURCE_EXHAUSTED_MS;
 	log('WARN', `ResourceExhausted en modelo`, { provider: providerName, model: modelId, cooldownMs: COOLDOWN_RESOURCE_EXHAUSTED_MS });
+}
+
+export function markRetired(providerName: ProviderName, modelId?: string): void {
+	retiredModels.add(getHealthKey(providerName, modelId));
+	const h = getHealth(providerName, modelId);
+	h.lastError = Date.now();
+	h.failureCount++;
+	h.consecutiveFailures++;
+	h.cooldownUntil = Number.MAX_SAFE_INTEGER;
+	log('WARN', `Modelo marcado como retirado (HTTP 410)`, { provider: providerName, model: modelId });
+}
+
+export function isRetired(providerName: string, modelId?: string): boolean {
+	return retiredModels.has(getHealthKey(providerName, modelId));
+}
+
+export function filterRetiredModels(models: ModelEntry[]): ModelEntry[] {
+	return models.filter((m) => !retiredModels.has(getHealthKey(m.provider, m.id)));
 }
 
 function isAvailable(providerName: string, modelId?: string): boolean {
@@ -167,6 +186,7 @@ export function filterModelsByTried(models: ModelEntry[], triedSet: Set<string>)
 export function resetAllHealth(): void {
 	healthMap.clear();
 	throttleMap.clear();
+	retiredModels.clear();
 }
 
 export function getModelHealth(providerName: ProviderName, modelId: string): ProviderHealth {

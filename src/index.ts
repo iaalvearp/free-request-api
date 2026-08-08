@@ -6,6 +6,8 @@ import {
 	markRateLimited,
 	markError,
 	markResourceExhausted,
+	markRetired,
+	isRetired,
 	checkThrottle,
 	updateThrottle,
 	getHealthSnapshot,
@@ -166,10 +168,11 @@ export default {
 			return errorResponse('No hay proveedores de IA configurados', 503, 'no_providers');
 		}
 
-		// Filter models by virtual route
-		const routeModels = virtualRoute
+		// Filter models by virtual route (and exclude retired models)
+		const routeModels = (virtualRoute
 			? filterModelsByRoute(allAvailableModels, virtualRoute)
-			: allAvailableModels;
+			: allAvailableModels
+		).filter((m) => !isRetired(m.provider, m.id));
 
 		if (routeModels.length === 0) {
 			log('ERROR', `Ningún modelo disponible para ruta ${virtualRoute}`);
@@ -195,6 +198,9 @@ export default {
 			targetModel = getModelById(userRequestedModel) ?? null;
 			if (!targetModel || !allAvailableModels.some((m) => m.id === targetModel!.id)) {
 				log('WARN', `Modelo "${userRequestedModel}" no disponible, selección automática`);
+				targetModel = selectWeightedModel(routeModels);
+			} else if (isRetired(targetModel.provider, targetModel.id)) {
+				log('WARN', `Modelo "${userRequestedModel}" retirado (410), selección automática`);
 				targetModel = selectWeightedModel(routeModels);
 			}
 		} else {
@@ -327,6 +333,16 @@ export default {
 						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
 						fallbackCount++;
 						log('WARN', `429 en ${targetModel.id} (key: ${envKey})`, { provider: targetModel.provider });
+						continue;
+					}
+
+					// Modelo retirado (HTTP 410 Gone): no devolver al cliente si hay otros modelos elegibles
+					if (response.status === 410) {
+						markRetired(targetModel.provider, targetModel.id);
+						const reason = `410 gone (${targetModel.provider}/${targetModel.id})`;
+						errors.push({ model: targetModel.id, provider: targetModel.provider, reason });
+						fallbackCount++;
+						log('WARN', `Modelo retirado (410) en ${targetModel.id}`, { provider: targetModel.provider });
 						continue;
 					}
 

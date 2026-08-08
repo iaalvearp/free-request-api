@@ -3,7 +3,6 @@ import type { ModelEntry, ProviderName, ProviderConfig, Env, VirtualRoute } from
 // En providers.ts
 export const MODEL_POOL: ModelEntry[] = [
 	{ id: 'gemini-2.5-flash', weight: 4, provider: 'gemini', envKey: 'GOOGLE_API_KEY', contextWindow: 1_048_576 },
-	{ id: 'deepseek-ai/deepseek-v4-flash', weight: 5, provider: 'nvidia', envKey: 'NVIDIA_API_KEY', contextWindow: 1_000_000 },
 	{ id: 'z-ai/glm-5.2', weight: 4, provider: 'nvidia', envKey: 'NVIDIA_API_KEY', contextWindow: 1_000_000 },
 	{ id: 'nvidia/nemotron-3-super-120b-a12b', weight: 3, provider: 'nvidia', envKey: 'NVIDIA_API_KEY', contextWindow: 1_000_000 },
 	{ id: 'nvidia/nemotron-3-nano-30b-a3b', weight: 3, provider: 'nvidia', envKey: 'NVIDIA_API_KEY', contextWindow: 1_000_000 },

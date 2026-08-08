@@ -24,7 +24,7 @@ Cloudflare Worker proxy OpenAI-compatible que rota entre Gemini, NVIDIA, Groq y 
 - **Modelos virtuales**: `alpes-auto` (pool completo ponderado), `alpes-agent` (solo ≥1M ctx + tool calls), `alpes-small` (rápidos ≤131K).
 - **Virtual never upstream**: ningún modelo virtual se envía como nombre upstream.
 - **Context overflow**: ~4 chars/token. Si `contextWindow ≤ 128K` y `estimated > 50K` → 400. Si `contextWindow ≥ 1M` y `estimated > 800K` → 400.
-- **Failover**: 429/503/timeout/400-context/ResourceExhausted → siguiente modelo del pool elegible. Máximo un intento por modelo por solicitud.
+- **Failover**: 429/503/timeout/400-context/ResourceExhausted/410-Gone → siguiente modelo del pool elegible. Máximo un intento por modelo por solicitud.
 - **ResourceExhausted**: cooldown 15 min específico del modelo (no del proveedor).
 - **Timeout upstream**: 25s con `AbortController`.
 - **Throttle**: 1 req/s por provider (Map de timestamps en isolate).
@@ -39,7 +39,6 @@ Cloudflare Worker proxy OpenAI-compatible que rota entre Gemini, NVIDIA, Groq y 
 
 ```
 gemini-2.5-flash           | 1M | gemini
-deepseek-ai/deepseek-v4-flash | 1M | nvidia
 z-ai/glm-5.2               | 1M | nvidia
 nvidia/nemotron-3-super-120b-a12b | 1M | nvidia
 nvidia/nemotron-3-nano-30b-a3b  | 1M | nvidia

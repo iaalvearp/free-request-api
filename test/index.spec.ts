@@ -44,9 +44,10 @@ interface MockCall {
 	bodyRaw: string;
 }
 
-function installMockFetch(
-	responses: Array<{ status: number; body?: string; statusText?: string }>,
-): { mock: ReturnType<typeof vi.fn>; calls: MockCall[] } {
+function installMockFetch(responses: Array<{ status: number; body?: string; statusText?: string }>): {
+	mock: ReturnType<typeof vi.fn>;
+	calls: MockCall[];
+} {
 	let idx = 0;
 	const calls: MockCall[] = [];
 
@@ -111,9 +112,7 @@ function createStreamResponse(chunks: string[], contentType = 'text/event-stream
 	});
 }
 
-function installMockFetchStream(
-	responses: Array<Response>,
-): { mock: ReturnType<typeof vi.fn>; calls: MockCall[] } {
+function installMockFetchStream(responses: Array<Response>): { mock: ReturnType<typeof vi.fn>; calls: MockCall[] } {
 	let idx = 0;
 	const calls: MockCall[] = [];
 
@@ -303,11 +302,11 @@ describe('free-request-api Worker', () => {
 		});
 
 		it('selectNextUntriedModel con triedSet salta modelos ya intentados', () => {
-			const tried = new Set<string>(['gemini-2.5-flash', 'deepseek-ai/deepseek-v4-flash']);
-			const result = selectNextUntriedModel('deepseek-ai/deepseek-v4-flash', MODEL_POOL, tried);
+			const tried = new Set<string>(['gemini-2.5-flash', 'z-ai/glm-5.2']);
+			const result = selectNextUntriedModel('z-ai/glm-5.2', MODEL_POOL, tried);
 			expect(result).not.toBeNull();
 			expect(result!.id).not.toBe('gemini-2.5-flash');
-			expect(result!.id).not.toBe('deepseek-ai/deepseek-v4-flash');
+			expect(result!.id).not.toBe('z-ai/glm-5.2');
 		});
 
 		it('selectNextUntriedModel con todos intentados retorna null', () => {
@@ -565,12 +564,7 @@ describe('free-request-api Worker', () => {
 
 		it('selectModelForRoute respeta afinidad existente cuando el modelo está disponible', () => {
 			updateAffinity('test-session', 'alpes-agent', 'gemini-2.5-flash', 'gemini');
-			const result = selectModelForRoute(
-				MODEL_POOL,
-				'alpes-agent',
-				'test-session',
-				new Set<string>(),
-			);
+			const result = selectModelForRoute(MODEL_POOL, 'alpes-agent', 'test-session', new Set<string>());
 			expect(result).not.toBeNull();
 			expect(result!.id).toBe('gemini-2.5-flash');
 		});
@@ -651,7 +645,6 @@ describe('free-request-api Worker', () => {
 			const agentModels = filterModelsByRoute(MODEL_POOL, 'alpes-agent');
 			const agentIds = agentModels.map((m) => m.id);
 			expect(agentIds).toContain('gemini-2.5-flash');
-			expect(agentIds).toContain('deepseek-ai/deepseek-v4-flash');
 			expect(agentIds).toContain('z-ai/glm-5.2');
 			expect(agentIds).toContain('nvidia/nemotron-3-super-120b-a12b');
 			expect(agentIds).not.toContain('nvidia/nemotron-3-nano-30b-a3b');
@@ -834,7 +827,7 @@ describe('free-request-api Worker', () => {
 			expect(res.status).toBe(200);
 		});
 
-			it('los pesos de alpes-auto permanecen sin cambios (iguales a MODEL_POOL)', () => {
+		it('los pesos de alpes-auto permanecen sin cambios (iguales a MODEL_POOL)', () => {
 			const autoModels = filterModelsByRoute(MODEL_POOL, 'alpes-auto');
 			for (const m of autoModels) {
 				const poolEntry = MODEL_POOL.find((p) => p.id === m.id)!;
@@ -942,9 +935,7 @@ describe('free-request-api Worker', () => {
 		});
 
 		it('400 no-context retorna al cliente sin failover', async () => {
-			const { calls } = installMockFetch([
-				{ status: 400, body: JSON.stringify({ error: { message: 'invalid_request: bad parameter' } }) },
-			]);
+			const { calls } = installMockFetch([{ status: 400, body: JSON.stringify({ error: { message: 'invalid_request: bad parameter' } }) }]);
 			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
@@ -1069,9 +1060,13 @@ describe('free-request-api Worker', () => {
 					body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], model: 'alpes-small' }),
 				});
 				const ctx = createExecutionContext();
-				const res = await worker.fetch(req, createMockEnv({
-					GROQ_ALT_KEY_1: 'test-groq-alt-1',
-				}), ctx);
+				const res = await worker.fetch(
+					req,
+					createMockEnv({
+						GROQ_ALT_KEY_1: 'test-groq-alt-1',
+					}),
+					ctx,
+				);
 				await waitOnExecutionContext(ctx);
 				expect(res.status).toBe(502);
 				// Nano (nvidia): 1 key → 1, gpt-oss-120b (cerebras): 1 key → 1, llama-3.3-70b-versatile (groq): 2 keys → 2, openai/gpt-oss-120b (groq): 2 keys → 2
@@ -1330,14 +1325,17 @@ describe('free-request-api Worker', () => {
 				object: 'chat.completion',
 				created: 1000,
 				model: 'gemini-2.5-flash',
-				choices: [{ index: 0, message: { role: 'assistant', content: 'Answer 1', reasoning_content: 'thinking...' }, finish_reason: 'stop' }],
+				choices: [
+					{ index: 0, message: { role: 'assistant', content: 'Answer 1', reasoning_content: 'thinking...' }, finish_reason: 'stop' },
+				],
 			});
 			const turn2Response = openAIResponse('gemini-2.5-flash', 'Answer 2');
 			const reasoning400Body = JSON.stringify({ error: { message: "property 'messages.1.assistant.reasoning_content' is unsupported" } });
-			const turn3Response = openAIResponse('deepseek-ai/deepseek-v4-flash', 'Answer 3');
+			const turn3Response = openAIResponse('z-ai/glm-5.2', 'Answer 3');
 
 			const allCalls: Array<{ url: string; body: string }> = [];
-			const mock = vi.fn()
+			const mock = vi
+				.fn()
 				.mockImplementationOnce(async (input) => {
 					const req = input instanceof Request ? input : new Request(input);
 					allCalls.push({ url: req.url, body: await req.text() });
@@ -1395,7 +1393,7 @@ describe('free-request-api Worker', () => {
 			await waitOnExecutionContext(createExecutionContext());
 			expect(res2.status).toBe(200);
 
-			// ── Turn 3: model A (gemini) returns 400 reasoning → model B (deepseek) returns 200 ──
+			// ── Turn 3: model A (gemini) returns 400 reasoning → model B (glm) returns 200 ──
 			const history3 = [
 				...history2,
 				{ role: 'assistant', content: 'Answer 2', reasoning_content: 'more thinking...' },
@@ -1422,7 +1420,7 @@ describe('free-request-api Worker', () => {
 				expect(m).not.toHaveProperty('reasoning_content');
 			}
 			// Model used in Turn 3 response must be model B
-			expect(res3.headers.get('X-Model-Used')).toMatch(/deepseek/);
+			expect(res3.headers.get('X-Model-Used')).toMatch(/glm/);
 			// Fallback count in Turn 3 must be 1
 			expect(res3.headers.get('X-Fallback-Count')).toBe('1');
 		});
@@ -1541,7 +1539,8 @@ describe('free-request-api Worker', () => {
 		it('un 429 anterior al stream activa failover', async () => {
 			const successChunks = ['data: {"content":"ok"}\n\n', 'data: [DONE]\n\n'];
 			const successRes = createStreamResponse(successChunks);
-			const mock = vi.fn()
+			const mock = vi
+				.fn()
 				.mockImplementationOnce(async () => new Response('rate limited', { status: 429, headers: { 'Content-Type': 'application/json' } }))
 				.mockImplementationOnce(async () => successRes);
 			vi.stubGlobal('fetch', mock);
@@ -1563,7 +1562,8 @@ describe('free-request-api Worker', () => {
 			const successChunks = ['data: {"content":"ok"}\n\n'];
 			const successRes = createStreamResponse(successChunks);
 			const nullBodyRes = new Response(null, { status: 200, headers: { 'Content-Type': 'text/plain' } });
-			const mock = vi.fn()
+			const mock = vi
+				.fn()
 				.mockImplementationOnce(async () => nullBodyRes)
 				.mockImplementationOnce(async () => successRes);
 			vi.stubGlobal('fetch', mock);
@@ -1643,6 +1643,130 @@ describe('free-request-api Worker', () => {
 			// Reading the stream should return the exact content
 			const body = await readStreamBody(res);
 			expect(body).toBe(chunks.join(''));
+		});
+	});
+
+	// ── HTTP 410 Gone (modelo retirado) ────────────────────────
+	describe('HTTP 410 Gone (modelo retirado)', () => {
+		beforeEach(() => {
+			vi.spyOn(Math, 'random').mockReturnValue(0);
+			resetAllHealth();
+		});
+
+		it('primer modelo devuelve 410 → se intenta otro', async () => {
+			const goneBody = JSON.stringify({ error: { message: 'model has reached its end of life' } });
+			const { calls } = installMockFetch([{ status: 410, body: goneBody }, { status: 200 }]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }] }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(calls.length).toBe(2);
+			expect(calls[0].model).toBe('gemini-2.5-flash');
+			expect(calls[1].model).not.toBe('gemini-2.5-flash');
+		});
+
+		it('segundo modelo responde 200 → el cliente recibe 200', async () => {
+			const goneBody = JSON.stringify({ error: { message: 'Gone: end of life' } });
+			const { calls } = installMockFetch([{ status: 410, body: goneBody }, { status: 200 }]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }] }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+			expect(res.headers.get('X-Model-Used')).toBe(calls[1].model);
+			expect(res.headers.get('X-Fallback-Count')).toBe('1');
+		});
+
+		it('el modelo que devolvió 410 no vuelve a intentarse en ese recorrido', async () => {
+			const goneBody = JSON.stringify({ error: { message: 'end of life' } });
+			const { calls } = installMockFetch([{ status: 410, body: goneBody }, { status: 410, body: goneBody }, { status: 200 }]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }] }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(calls.length).toBe(3);
+			const models = calls.map((c) => c.model);
+			expect(new Set(models).size).toBe(models.length);
+			expect(models.filter((m) => m === 'gemini-2.5-flash').length).toBe(1);
+			expect(res.status).toBe(200);
+		});
+
+		it('failover por 410 funciona también con stream:true', async () => {
+			const goneBody = JSON.stringify({ error: { message: 'end of life' } });
+			const successChunks = ['data: {"content":"ok"}\n\n', 'data: [DONE]\n\n'];
+			const streamRes = createStreamResponse(successChunks);
+			const mock = vi
+				.fn()
+				.mockImplementationOnce(async () => new Response(goneBody, { status: 410, headers: { 'Content-Type': 'application/json' } }))
+				.mockImplementationOnce(async () => streamRes);
+			vi.stubGlobal('fetch', mock);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], stream: true }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+			const body = await readStreamBody(res);
+			expect(body).toBe(successChunks.join(''));
+			expect(mock.mock.calls.length).toBe(2);
+		});
+
+		it('si todos los modelos disponibles fallan con 410, termina limpiamente sin bucle', async () => {
+			const goneBody = JSON.stringify({ error: { message: 'end of life' } });
+			const { calls } = installMockFetch(Array(20).fill({ status: 410, body: goneBody }));
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }] }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			const eligible = getAvailableModels(createMockEnv()).length;
+			expect(calls.length).toBe(eligible);
+			const models = calls.map((c) => c.model);
+			expect(new Set(models).size).toBe(models.length);
+			expect(res.status).toBe(502);
+		});
+
+		it('un modelo retirado (410) no se vuelve a seleccionar en una solicitud posterior', async () => {
+			const goneBody = JSON.stringify({ error: { message: 'end of life' } });
+			const mkReq = () =>
+				new IncomingRequest('http://example.com/v1/chat/completions', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+					body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }] }),
+				});
+
+			const first = installMockFetch([{ status: 410, body: goneBody }, { status: 200 }]);
+			const ctx1 = createExecutionContext();
+			const res1 = await worker.fetch(mkReq(), createMockEnv(), ctx1);
+			await waitOnExecutionContext(ctx1);
+			expect(res1.status).toBe(200);
+			expect(first.calls[0].model).toBe('gemini-2.5-flash');
+
+			const { calls } = installMockFetch([{ status: 200 }]);
+			const ctx2 = createExecutionContext();
+			const res = await worker.fetch(mkReq(), createMockEnv(), ctx2);
+			await waitOnExecutionContext(ctx2);
+			expect(calls.length).toBe(1);
+			expect(calls[0].model).not.toBe('gemini-2.5-flash');
+			expect(res.status).toBe(200);
 		});
 	});
 });

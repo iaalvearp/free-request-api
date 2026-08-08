@@ -106,7 +106,6 @@ curl -H "Authorization: Bearer $CUSTOM_API_KEY" http://localhost:8787/stats
 | Modelo | Peso | Provider |
 |--------|------|----------|
 | `gemini-2.5-flash` | 4 | gemini |
-| `deepseek-ai/deepseek-v4-flash` | 5 | nvidia |
 | `z-ai/glm-5.2` | 4 | nvidia |
 | `nvidia/nemotron-3-super-120b-a12b` | 3 | nvidia |
 | `llama-3.3-70b-versatile` | 3 | groq |

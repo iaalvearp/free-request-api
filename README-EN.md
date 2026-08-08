@@ -58,9 +58,9 @@ Opencode / Continue / VS Code
    ┌──────────────────────────────────────────┐
    │           Provider Pool                  │
    │                                          │
-   │  NVIDIA NIM     — DeepSeek V4 Flash      │
-   │                 — GLM 5.2                │
+   │  NVIDIA NIM     — GLM 5.2                │
    │                 — Nemotron 3 Super 120B  │
+   │                 — Nemotron 3 Nano        │
    │                                          │
    │  Groq           — Llama 3.3 70B          │
    │                 — GPT-OSS 120B           │
@@ -304,14 +304,14 @@ All providers used are free-tier with no credit card required.
 
 | Provider | Models | RPM | RPD | Notes |
 |----------|--------|-----|-----|-------|
-| NVIDIA NIM | DeepSeek V4 Flash, GLM 5.2, Nemotron 3 Super 120B | ~40 | unlimited | Phone verification required |
+| NVIDIA NIM | GLM 5.2, Nemotron 3 Super 120B, Nemotron 3 Nano | ~40 | unlimited | Phone verification required |
 | Groq | Llama 3.3 70B, GPT-OSS 120B | 30 | 1,000/model | Fastest inference (LPU hardware) |
 | Google AI Studio | Gemini 2.5 Flash | 15 | 1,500 | 1M token context window |
 | Cerebras | Llama 3.3 70B | 2 | unlimited | Ultra-fast inference |
 
 **Important Notes:**
 - A single `NVIDIA_API_KEY` enables multiple NVIDIA models
-- DeepSeek V4 Flash is consumed via NVIDIA (model `deepseek-ai/deepseek-v4-flash`)
+- DeepSeek V4 Flash (NVIDIA) reached its end of life and was removed from the pool (upstream responds HTTP 410 Gone)
 - `DEEPSEEK_API_KEY` is NOT used; direct DeepSeek endpoint is removed
 - OpenRouter has been removed
 - NVIDIA free endpoints are for development/testing, not production

@@ -17,7 +17,6 @@ src/
 
 ```ts
 { id: "gemini-2.5-flash",          weight: 4, provider: "gemini",   envKey: "GOOGLE_API_KEY",     contextWindow: 1_048_576 }
-{ id: "deepseek-ai/deepseek-v4-flash", weight: 5, provider: "nvidia",   envKey: "NVIDIA_API_KEY",     contextWindow: 1_000_000 }
 { id: "z-ai/glm-5.2",              weight: 4, provider: "nvidia",   envKey: "NVIDIA_API_KEY",     contextWindow: 1_000_000 }
 { id: "nvidia/nemotron-3-super-120b-a12b", weight: 3, provider: "nvidia",   envKey: "NVIDIA_API_KEY",     contextWindow: 1_000_000 }
 { id: "llama-3.3-70b-versatile",   weight: 3, provider: "groq",     envKey: "GROQ_API_KEY",       contextWindow: 131_072 }
@@ -44,7 +43,7 @@ Todos usan `Authorization: Bearer <key>` (formato OpenAI). Sin transformación d
 ### alpes-agent
 - Solo modelos con contextWindow >= 1_000_000
 - Debe soportar tool_calls y mensajes multi-turno
-- Candidatos: gemini-2.5-flash, deepseek-ai/deepseek-v4-flash, z-ai/glm-5.2, nvidia/nemotron-3-super-120b-a12b
+- Candidatos: gemini-2.5-flash, z-ai/glm-5.2, nvidia/nemotron-3-super-120b-a12b
 - Context window: min(1M) = 1_000_000
 - Nunca se envía upstream como nombre real
 
@@ -77,7 +76,8 @@ Todos usan `Authorization: Bearer <key>` (formato OpenAI). Sin transformación d
 ## NVIDIA Integration Notes
 
 - Una sola `NVIDIA_API_KEY` permite seleccionar distintos modelos NVIDIA.
-- DeepSeek V4 Flash se consume mediante NVIDIA (modelo `deepseek-ai/deepseek-v4-flash`).
+- GLM 5.2 y Nemotron 3 se consumen mediante NVIDIA.
+- DeepSeek V4 Flash (NVIDIA) fue retirado (end of life): NVIDIA responde HTTP 410 Gone, el proxy hace failover y lo marca como no disponible en el isolate.
 - NO se utiliza `DEEPSEEK_API_KEY` ni endpoint directo `api.deepseek.com`.
 - OpenRouter fue retirado.
 - Health tracking por modelo (`provider:modelId`), throttle por proveedor.
@@ -93,7 +93,8 @@ Todos usan `Authorization: Bearer <key>` (formato OpenAI). Sin transformación d
 
 ## Failover
 
-- 429, 503, timeout (25s), 400 context/model_not_found/reasoning_content → fallback
+- 429, 503, timeout (25s), 400 context/model_not_found/reasoning_content, 410 Gone → fallback
+- 410 Gone: marca el modelo como retirado (no se vuelve a seleccionar en el isolate) y continúa con el siguiente modelo
 - ResourceExhausted (detectado en body) → fallback
 - Máximo un intento por modelo por solicitud
 - Set<string> de modelos intentados

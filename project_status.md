@@ -8,9 +8,9 @@
 
 ## 1. Resumen Ejecutivo
 
-**free-request-api** es un **proxy OpenAI-compatible** (`/v1/chat/completions`) desplegado como **Cloudflare Worker** que rota inteligentemente entre **4 proveedores de IA** (Gemini, NVIDIA, Groq, Cerebras) con **7 modelos** en pool ponderado. Incluye:
+**free-request-api** es un **proxy OpenAI-compatible** (`/v1/chat/completions`) desplegado como **Cloudflare Worker** que rota inteligentemente entre **4 proveedores de IA** (Gemini, NVIDIA, Groq, Cerebras) con **6 modelos** en pool ponderado. Incluye:
 
-- **Failover automático** ante 429/503/timeout/error 400 contexto
+- **Failover automático** ante 429/503/timeout/error 400 contexto/410 Gone
 - **Detección de OpenCode** → lock de modelo exacto si envía `model` + User-Agent
 - **Throttle 1 req/s por proveedor** (in-isolate Map)
 - **Health tracking por modelo** (`provider:modelId`) en isolate
@@ -28,7 +28,7 @@ free-request-api/
 ├── src/
 │   ├── index.ts        → Handler principal (auth, OpenCode detection, failover, routing, virtual models)
 │   ├── types.ts        → Types: Env, ModelEntry, ProviderName, IncomingRequest, ChatMessage
-│   ├── providers.ts    → MODEL_POOL (7 modelos), PROVIDERS (URLs), ALT_KEYS, getAvailableModels
+│   ├── providers.ts    → MODEL_POOL (6 modelos), PROVIDERS (URLs), ALT_KEYS, getAvailableModels
 │   ├── selector.ts     → Weighted random, throttle 1/s, health tracking por modelo (Map in-isolate)
 │   ├── transformer.ts  → buildUpstreamRequest, buildProxyResponse (headers OpenAI)
 │   ├── stats.ts        → KV daily counter (100k/día CF), getTodayStats
@@ -65,7 +65,6 @@ Env { CUSTOM_API_KEY, ENVIRONMENT, GOOGLE_API_KEY, NVIDIA_API_KEY, GROQ_API_KEY,
 ```typescript
 MODEL_POOL = [
   { id: 'gemini-2.5-flash',          weight: 4, provider: 'gemini',   envKey: 'GOOGLE_API_KEY',     contextWindow: 1_048_576 },
-  { id: 'deepseek-ai/deepseek-v4-flash', weight: 5, provider: 'nvidia',   envKey: 'NVIDIA_API_KEY',     contextWindow: 1_000_000 },
   { id: 'z-ai/glm-5.2',              weight: 4, provider: 'nvidia',   envKey: 'NVIDIA_API_KEY',     contextWindow: 1_000_000 },
   { id: 'nvidia/nemotron-3-super-120b-a12b', weight: 3, provider: 'nvidia',   envKey: 'NVIDIA_API_KEY',     contextWindow: 1_000_000 },
   { id: 'llama-3.3-70b-versatile',   weight: 3, provider: 'groq',     envKey: 'GROQ_API_KEY',       contextWindow: 131_072 },
@@ -104,7 +103,7 @@ isAvailable(providerName, modelId?)     → Date.now() >= cooldownUntil
 checkThrottle(providerName)   → null | msToWait (1 req/s por proveedor)
 updateThrottle(providerName)  → set now
 
-getHealthSnapshot() → Record<string, ProviderHealth>  // incluye claves "nvidia:deepseek-ai/deepseek-v4-flash"
+getHealthSnapshot() → Record<string, ProviderHealth>  // incluye claves "nvidia:z-ai/glm-5.2"
 selectWeightedModel(models[]) → ModelEntry | null
 selectFallbackModel(failedModelId, models[]) → siguiente en array o null
 filterAvailableModels(models[]) → filtra por isAvailable(provider, modelId)
@@ -192,7 +191,7 @@ X-Model-Used: gemini-2.5-flash
 X-Provider-Used: gemini
 X-Model-Context-Window: 1048576
 X-Fallback-Count: 2
-X-Retry-Reason: 429 rate limited (gemini/gemini-2.5-flash); 500 Internal Server Error (nvidia/deepseek-ai/deepseek-v4-flash)
+X-Retry-Reason: 429 rate limited (gemini/gemini-2.5-flash); 500 Internal Server Error (nvidia/z-ai/glm-5.2)
 Access-Control-Allow-Origin: *
 ```
 
@@ -277,7 +276,7 @@ npx wrangler tail
   "status": "ok",
   "providers": {
     "gemini": { "lastSuccess": 1721..., "last429": 0, "lastError": 0, "successCount": 42, "failureCount": 1, "cooldownUntil": 0, "consecutiveFailures": 0 },
-    "nvidia:deepseek-ai/deepseek-v4-flash": { ... },
+    "nvidia:z-ai/glm-5.2": { ... },
     "nvidia:z-ai/glm-5.2": { ... },
     "nvidia:nvidia/nemotron-3-super-120b-a12b": { ... },
     "groq": { ... },
@@ -317,7 +316,7 @@ Access-Control-Allow-Headers: Content-Type, Authorization, X-OpenCode-Session
 | **No OpenCode / sin model** | Weighted random del pool disponible (index.ts:167-170) |
 | **Modelos virtuales** | `alpes-auto` → weighted rotation; `alpes-long` → (pendiente, documentado) |
 | **Context overflow** | ~4 chars/token; ≤128k ctx → threshold 50k; ≥1M ctx → threshold 800k (index.ts:37-47, 177-204) |
-| **Failover triggers** | 429, ≥500, 404, timeout 25s, 400 context/model not found (index.ts:245-280) |
+| **Failover triggers** | 429, ≥500, 404, timeout 25s, 400 context/model not found, 410 Gone (index.ts:245-280) |
 | **Throttle** | 1 req/s por provider (Map timestamps en isolate) (selector.ts:56-68) |
 | **Health tracking** | success/429/error → cooldown 3min/1min, contadores por `provider:modelId` (selector.ts:26-54) |
 | **Response headers** | `X-Model-Used`, `X-Provider-Used`, `X-Model-Context-Window`, `X-Fallback-Count`, `X-Retry-Reason` (transformer.ts:46-54) |
