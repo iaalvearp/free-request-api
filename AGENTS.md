@@ -21,7 +21,9 @@ Cloudflare Worker proxy OpenAI-compatible que rota entre Gemini, NVIDIA, Groq y 
 - **OpenCode detection**: `User-Agent` conteniendo "opencode" o header `X-OpenCode-Session` presente.
 - **OpenCode + model en body** → usar ESE modelo exacto, NO rotar.
 - **Sin OpenCode o sin model** → weighted random del pool.
-- **Modelos virtuales**: `alpes-auto` (pool completo ponderado), `alpes-agent` (solo ≥1M ctx + tool calls), `alpes-small` (rápidos ≤131K).
+- **Modelos virtuales**: `alpes-auto` (pool completo ponderado), `alpes-agent` (allowlist 1M+: DeepSeek V4 Flash, Gemini 3.6 Flash, Nemotron Super, Gemini 2.5 Flash, Nemotron Ultra, GLM 5.2), `alpes-small` (Nano, Gemini 3.5 Flash Lite, Cerebras GPT-OSS, Groq).
+- **Pesos por ruta**: `alpes-agent` y `alpes-small` usan `ROUTE_WEIGHTS` (allowlist con orden explícito). Nano y Flash-Lite NO entran en alpes-agent.
+- **reasoning_effort**: se envía `incoming.reasoning_effort ?? 'low'` a Gemini 3.6 Flash, Gemini 3.5 Flash Lite y Cerebras GPT-OSS. El valor del cliente siempre gana. No se envía a otros modelos.
 - **Virtual never upstream**: ningún modelo virtual se envía como nombre upstream.
 - **Context overflow**: ~4 chars/token. Si `contextWindow ≤ 128K` y `estimated > 50K` → 400. Si `contextWindow ≥ 1M` y `estimated > 800K` → 400.
 - **Failover**: 429/503/timeout/400-context/ResourceExhausted/410-Gone → siguiente modelo del pool elegible. Máximo un intento por modelo por solicitud.
@@ -45,15 +47,19 @@ nvidia/nemotron-3-nano-30b-a3b  | 1M | nvidia
 llama-3.3-70b-versatile    | 131K | groq
 gpt-oss-120b               | 131K | cerebras
 openai/gpt-oss-120b        | 131K | groq
+deepseek-ai/deepseek-v4-flash-0731 | 1M | nvidia
+nvidia/nemotron-3-ultra-550b-a55b | 1M | nvidia
+gemini-3.6-flash           | 1M | gemini
+gemini-3.5-flash-lite      | 1M | gemini
 ```
 
 ## Rutas virtuales
 
-| Ruta | Modelos | Contexto |
-|------|---------|---------|
-| alpes-auto | Todos disponibles con key | min(contextWindow) del pool |
-| alpes-agent | Solo ≥1M (Gemini, NVIDIA) | min(1M) = 1_000_000 |
-| alpes-small | Solo ≤131K (NVIDIA Nano, Cerebras, Groq) | min(131K) = 131_072 |
+| Ruta | Modelos (orden de failover) | Pesos | Contexto |
+|------|---------|-------|---------|
+| alpes-auto | Todos disponibles con key | Pesos de MODEL_POOL, sin overrides | min(contextWindow) del pool |
+| alpes-agent | deepseek-v4-flash-0731 → gemini-3.6-flash → nemotron-super → gemini-2.5-flash → nemotron-ultra → z-ai/glm-5.2 | 5 / 5 / 3 / 3 / 2 / 1 | min(1M) = 1_000_000 |
+| alpes-small | nano → gemini-3.5-flash-lite → gpt-oss-120b → llama-3.3-70b-versatile → openai/gpt-oss-120b | 10 / 8 / 3 / 1 / 1 | min(131K) = 131_072 |
 
 ## Archivos importantes
 

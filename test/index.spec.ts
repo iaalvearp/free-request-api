@@ -381,14 +381,16 @@ describe('free-request-api Worker', () => {
 			expect(result.length).toBeLessThan(MODEL_POOL.length);
 		});
 
-		it('alpes-small incluye Nemotron Nano, Cerebras y Groq', () => {
+		it('alpes-small incluye exactamente 5 modelos en orden explícito', () => {
 			const result = filterModelsByRoute(MODEL_POOL, 'alpes-small');
 			const ids = result.map((m) => m.id);
-			expect(ids).toContain('nvidia/nemotron-3-nano-30b-a3b');
-			expect(ids).toContain('gpt-oss-120b');
-			expect(ids).toContain('llama-3.3-70b-versatile');
-			expect(ids).toContain('openai/gpt-oss-120b');
-			expect(result.length).toBe(4);
+			expect(ids).toEqual([
+				'nvidia/nemotron-3-nano-30b-a3b',
+				'gemini-3.5-flash-lite',
+				'gpt-oss-120b',
+				'llama-3.3-70b-versatile',
+				'openai/gpt-oss-120b',
+			]);
 		});
 
 		it('alpes-auto incluye todos los modelos', () => {
@@ -508,7 +510,7 @@ describe('free-request-api Worker', () => {
 
 	// ── No duplicate attempts ──────────────────────────────────
 	describe('No duplicate attempts', () => {
-		it('el mismo modelo no se intenta dos veces en una solicitud', async () => {
+		it('el mismo modelo no se intenta dos veces en una solicitud', { timeout: 20000 }, async () => {
 			vi.spyOn(Math, 'random').mockReturnValue(0);
 			const { calls } = installMockFetch(Array(20).fill({ status: 503 }));
 			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
@@ -525,7 +527,7 @@ describe('free-request-api Worker', () => {
 			expect(res.status).toBe(502);
 		});
 
-		it('máximo de intentos = número de modelos elegibles', async () => {
+		it('máximo de intentos = número de modelos elegibles', { timeout: 20000 }, async () => {
 			vi.spyOn(Math, 'random').mockReturnValue(0);
 			const { calls } = installMockFetch(Array(20).fill({ status: 503 }));
 			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
@@ -639,18 +641,18 @@ describe('free-request-api Worker', () => {
 			expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
 		});
 
-		it('Nano tiene ~66.7% del peso de alpes-small con ROUTE_WEIGHTS', () => {
+		it('Nano tiene ~43.5% del peso de alpes-small con ROUTE_WEIGHTS', () => {
 			const weights = ROUTE_WEIGHTS['alpes-small']!;
 			const total = Object.values(weights).reduce((a, b) => a + b, 0);
-			expect(total).toBe(15);
-			expect(weights['nvidia/nemotron-3-nano-30b-a3b'] / total).toBeCloseTo(0.667, 1);
+			expect(total).toBe(23);
+			expect(weights['nvidia/nemotron-3-nano-30b-a3b'] / total).toBeCloseTo(0.435, 1);
 			const smallModels = filterModelsByRoute(MODEL_POOL, 'alpes-small');
 			vi.spyOn(Math, 'random').mockReturnValue(0);
 			expect(selectWeightedModel(smallModels, weights)?.id).toBe('nvidia/nemotron-3-nano-30b-a3b');
-			vi.spyOn(Math, 'random').mockReturnValue(10 / 15 - 0.001);
+			vi.spyOn(Math, 'random').mockReturnValue(10 / 23 - 0.001);
 			expect(selectWeightedModel(smallModels, weights)?.id).toBe('nvidia/nemotron-3-nano-30b-a3b');
-			vi.spyOn(Math, 'random').mockReturnValue(10 / 15 + 0.001);
-			expect(selectWeightedModel(smallModels, weights)?.id).toBe('gpt-oss-120b');
+			vi.spyOn(Math, 'random').mockReturnValue(10 / 23 + 0.001);
+			expect(selectWeightedModel(smallModels, weights)?.id).toBe('gemini-3.5-flash-lite');
 		});
 
 		it('Nano no desplaza modelos principales de alpes-agent', () => {
@@ -662,7 +664,7 @@ describe('free-request-api Worker', () => {
 			expect(agentIds).not.toContain('nvidia/nemotron-3-nano-30b-a3b');
 		});
 
-		it('Cerebras gpt-oss-120b es el segundo modelo del failover de alpes-small', async () => {
+		it('gemini-3.5-flash-lite es el segundo modelo del failover de alpes-small', async () => {
 			vi.spyOn(Math, 'random').mockReturnValue(0);
 			const { calls } = installMockFetch([{ status: 503 }, { status: 200 }]);
 			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
@@ -676,7 +678,7 @@ describe('free-request-api Worker', () => {
 			expect(res.status).toBe(200);
 			expect(calls.length).toBe(2);
 			expect(calls[0].model).toBe('nvidia/nemotron-3-nano-30b-a3b');
-			expect(calls[1].model).toBe('gpt-oss-120b');
+			expect(calls[1].model).toBe('gemini-3.5-flash-lite');
 		});
 
 		it('Nano responde sin llamar a ningún respaldo', async () => {
@@ -695,7 +697,7 @@ describe('free-request-api Worker', () => {
 			expect(res.status).toBe(200);
 		});
 
-		it('Nano falla y Cerebras gpt-oss-120b responde sin llegar a Groq', async () => {
+		it('Nano falla y gemini-3.5-flash-lite responde sin llegar a Cerebras', async () => {
 			vi.spyOn(Math, 'random').mockReturnValue(0);
 			const { calls } = installMockFetch([{ status: 503 }, { status: 200 }]);
 			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
@@ -707,7 +709,7 @@ describe('free-request-api Worker', () => {
 			const res = await worker.fetch(req, createMockEnv(), ctx);
 			await waitOnExecutionContext(ctx);
 			expect(calls.length).toBe(2);
-			expect(calls[1].model).toBe('gpt-oss-120b');
+			expect(calls[1].model).toBe('gemini-3.5-flash-lite');
 			expect(res.status).toBe(200);
 		});
 	});
@@ -734,11 +736,12 @@ describe('free-request-api Worker', () => {
 			expect(weight).toBe(3);
 		});
 
-		it('Cerebras gpt-oss-120b es el segundo modelo del failover de alpes-small', () => {
+		it('Cerebras gpt-oss-120b es el tercer modelo del failover de alpes-small', () => {
 			const smallModels = filterModelsByRoute(MODEL_POOL, 'alpes-small');
 			const idx = smallModels.findIndex((m) => m.id === 'gpt-oss-120b');
-			expect(idx).toBe(1);
+			expect(idx).toBe(2);
 			expect(smallModels[0].id).toBe('nvidia/nemotron-3-nano-30b-a3b');
+			expect(smallModels[1].id).toBe('gemini-3.5-flash-lite');
 			expect(smallModels[idx].provider).toBe('cerebras');
 		});
 
@@ -863,6 +866,168 @@ describe('free-request-api Worker', () => {
 		});
 	});
 
+	// ── Pool ampliado (4 modelos verificados con API real) ────
+	describe('Pool ampliado', () => {
+		const NEW_AGENT_MODELS = [
+			'deepseek-ai/deepseek-v4-flash-0731',
+			'gemini-3.6-flash',
+			'nvidia/nemotron-3-super-120b-a12b',
+			'gemini-2.5-flash',
+			'nvidia/nemotron-3-ultra-550b-a55b',
+			'z-ai/glm-5.2',
+		];
+
+		it('los 4 modelos nuevos aparecen cuando existe su API key', () => {
+			const ids = getAvailableModels(createMockEnv()).map((m) => m.id);
+			expect(ids).toContain('deepseek-ai/deepseek-v4-flash-0731');
+			expect(ids).toContain('nvidia/nemotron-3-ultra-550b-a55b');
+			expect(ids).toContain('gemini-3.6-flash');
+			expect(ids).toContain('gemini-3.5-flash-lite');
+		});
+
+		it('los 4 modelos nuevos no aparecen sin su API key', () => {
+			const ids = getAvailableModels(createMockEnv({ NVIDIA_API_KEY: '', GOOGLE_API_KEY: '' })).map((m) => m.id);
+			expect(ids).not.toContain('deepseek-ai/deepseek-v4-flash-0731');
+			expect(ids).not.toContain('nvidia/nemotron-3-ultra-550b-a55b');
+			expect(ids).not.toContain('gemini-3.6-flash');
+			expect(ids).not.toContain('gemini-3.5-flash-lite');
+		});
+
+		it('alpes-agent contiene exactamente los 6 modelos indicados en orden explícito', () => {
+			const agentIds = filterModelsByRoute(MODEL_POOL, 'alpes-agent').map((m) => m.id);
+			expect(agentIds).toEqual(NEW_AGENT_MODELS);
+		});
+
+		it('Nano NO entra en alpes-agent', () => {
+			const agentIds = filterModelsByRoute(MODEL_POOL, 'alpes-agent').map((m) => m.id);
+			expect(agentIds).not.toContain('nvidia/nemotron-3-nano-30b-a3b');
+		});
+
+		it('gemini-3.5-flash-lite NO entra en alpes-agent pese a tener 1M de contexto', () => {
+			const agentIds = filterModelsByRoute(MODEL_POOL, 'alpes-agent').map((m) => m.id);
+			expect(agentIds).not.toContain('gemini-3.5-flash-lite');
+		});
+
+		it('ROUTE_WEIGHTS de alpes-agent son exactamente los definidos', () => {
+			expect(ROUTE_WEIGHTS['alpes-agent']).toEqual({
+				'deepseek-ai/deepseek-v4-flash-0731': 5,
+				'gemini-3.6-flash': 5,
+				'nvidia/nemotron-3-super-120b-a12b': 3,
+				'gemini-2.5-flash': 3,
+				'nvidia/nemotron-3-ultra-550b-a55b': 2,
+				'z-ai/glm-5.2': 1,
+			});
+		});
+
+		it('alpes-small contiene exactamente 5 modelos en el orden definido', () => {
+			const smallIds = filterModelsByRoute(MODEL_POOL, 'alpes-small').map((m) => m.id);
+			expect(smallIds).toEqual([
+				'nvidia/nemotron-3-nano-30b-a3b',
+				'gemini-3.5-flash-lite',
+				'gpt-oss-120b',
+				'llama-3.3-70b-versatile',
+				'openai/gpt-oss-120b',
+			]);
+		});
+
+		it('ROUTE_WEIGHTS de alpes-small son exactamente los definidos', () => {
+			expect(ROUTE_WEIGHTS['alpes-small']).toEqual({
+				'nvidia/nemotron-3-nano-30b-a3b': 10,
+				'gemini-3.5-flash-lite': 8,
+				'gpt-oss-120b': 3,
+				'llama-3.3-70b-versatile': 1,
+				'openai/gpt-oss-120b': 1,
+			});
+		});
+
+		it('alpes-auto conserva todos los modelos disponibles con sus pesos de MODEL_POOL', () => {
+			const autoModels = filterModelsByRoute(MODEL_POOL, 'alpes-auto');
+			expect(autoModels.length).toBe(MODEL_POOL.length);
+			for (let i = 0; i < MODEL_POOL.length; i++) {
+				expect(autoModels[i].id).toBe(MODEL_POOL[i].id);
+				expect(autoModels[i].weight).toBe(MODEL_POOL[i].weight);
+			}
+			expect(ROUTE_WEIGHTS['alpes-auto']).toBeUndefined();
+		});
+
+		it('gemini-3.6-flash envía reasoning_effort: "low" por defecto', async () => {
+			vi.spyOn(Math, 'random').mockReturnValue(0);
+			const { calls } = installMockFetch([{ status: 200 }]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], model: 'gemini-3.6-flash' }),
+			});
+			const ctx = createExecutionContext();
+			await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(calls.length).toBe(1);
+			const body = JSON.parse(calls[0].bodyRaw);
+			expect(body.model).toBe('gemini-3.6-flash');
+			expect(body.reasoning_effort).toBe('low');
+		});
+
+		it('gemini-3.5-flash-lite envía reasoning_effort: "low" por defecto', async () => {
+			vi.spyOn(Math, 'random').mockReturnValue(0);
+			const { calls } = installMockFetch([{ status: 200 }]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], model: 'gemini-3.5-flash-lite' }),
+			});
+			const ctx = createExecutionContext();
+			await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(calls.length).toBe(1);
+			const body = JSON.parse(calls[0].bodyRaw);
+			expect(body.model).toBe('gemini-3.5-flash-lite');
+			expect(body.reasoning_effort).toBe('low');
+		});
+
+		it('gemini respeta reasoning_effort enviado por el cliente', async () => {
+			vi.spyOn(Math, 'random').mockReturnValue(0);
+			const { calls } = installMockFetch([{ status: 200 }]);
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({
+					messages: [{ role: 'user', content: 'test' }],
+					model: 'gemini-3.6-flash',
+					reasoning_effort: 'high',
+				}),
+			});
+			const ctx = createExecutionContext();
+			await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(calls.length).toBe(1);
+			const body = JSON.parse(calls[0].bodyRaw);
+			expect(body.reasoning_effort).toBe('high');
+		});
+
+		it('failover de alpes-agent recorre los 6 modelos sin repetirlos', { timeout: 15000 }, async () => {
+			vi.spyOn(Math, 'random').mockReturnValue(0);
+			resetAllHealth();
+			const agentCount = filterModelsByRoute(MODEL_POOL, 'alpes-agent').length;
+			expect(agentCount).toBe(6);
+			const { calls } = installMockFetch(Array(agentCount + 5).fill({ status: 503 }));
+			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
+				body: JSON.stringify({ messages: [{ role: 'user', content: 'test' }], model: 'alpes-agent' }),
+			});
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(req, createMockEnv(), ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(502);
+			expect(calls.length).toBe(agentCount);
+			const models = calls.map((c) => c.model);
+			expect(new Set(models).size).toBe(models.length);
+			for (const expected of NEW_AGENT_MODELS) {
+				expect(models).toContain(expected);
+			}
+		});
+	});
+
 	// ── Failover Behavior ──────────────────────────────────────
 	describe('Failover Behavior', () => {
 		it('respuesta 200 detiene el failover (1 sola llamada)', async () => {
@@ -974,7 +1139,7 @@ describe('free-request-api Worker', () => {
 			expect(calls[0].model).toBe('gemini-2.5-flash');
 		});
 
-		it('todos los proveedores fallan → 502', async () => {
+		it('todos los proveedores fallan → 502', { timeout: 20000 }, async () => {
 			const { calls } = installMockFetch(Array(20).fill({ status: 500 }));
 			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
 				method: 'POST',
@@ -1044,8 +1209,8 @@ describe('free-request-api Worker', () => {
 			expect(modelUsed).toBe(calls[2].model);
 		});
 
-		it('si todos fallan, cada modelo se intentó una sola vez', async () => {
-			const { calls } = installMockFetch([{ status: 503 }, { status: 503 }, { status: 503 }, { status: 503 }]);
+		it('si todos fallan, cada modelo se intentó una sola vez', { timeout: 20000 }, async () => {
+			const { calls } = installMockFetch(Array(5).fill({ status: 503 }));
 			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
@@ -1055,17 +1220,17 @@ describe('free-request-api Worker', () => {
 			const res = await worker.fetch(req, createMockEnv(), ctx);
 			await waitOnExecutionContext(ctx);
 			expect(res.status).toBe(502);
-			expect(calls.length).toBe(4);
+			expect(calls.length).toBe(5);
 			const models = calls.map((c) => c.model);
 			const uniqueModels = new Set(models);
-			expect(uniqueModels.size).toBe(4);
+			expect(uniqueModels.size).toBe(5);
 		});
 
 		it('varias claves para un modelo no terminan el bucle prematuramente', { timeout: 15000 }, async () => {
 			const prev = ALT_KEYS['groq'];
 			ALT_KEYS['groq'] = ['GROQ_ALT_KEY_1'];
 			try {
-				const { calls } = installMockFetch(Array(6).fill({ status: 503 }));
+				const { calls } = installMockFetch(Array(7).fill({ status: 503 }));
 				const req = new IncomingRequest('http://example.com/v1/chat/completions', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-key' },
@@ -1081,11 +1246,11 @@ describe('free-request-api Worker', () => {
 				);
 				await waitOnExecutionContext(ctx);
 				expect(res.status).toBe(502);
-				// Nano (nvidia): 1 key → 1, gpt-oss-120b (cerebras): 1 key → 1, llama-3.3-70b-versatile (groq): 2 keys → 2, openai/gpt-oss-120b (groq): 2 keys → 2
-				expect(calls.length).toBe(6);
+				// Nano (nvidia): 1 key → 1, gemini-3.5-flash-lite (gemini): 1 key → 1, gpt-oss-120b (cerebras): 1 key → 1, llama-3.3-70b-versatile (groq): 2 keys → 2, openai/gpt-oss-120b (groq): 2 keys → 2
+				expect(calls.length).toBe(7);
 				const models = calls.map((c) => c.model);
 				const uniqueModels = new Set(models);
-				expect(uniqueModels.size).toBe(4);
+				expect(uniqueModels.size).toBe(5);
 			} finally {
 				if (prev) {
 					ALT_KEYS['groq'] = prev;
@@ -1124,7 +1289,7 @@ describe('free-request-api Worker', () => {
 			expect(bodyStr).not.toContain('test-nvidia-key');
 		});
 
-		it('respuesta de error no contiene la API key del cliente', async () => {
+		it('respuesta de error no contiene la API key del cliente', { timeout: 20000 }, async () => {
 			const realKey = 'super-secret-api-key-12345678';
 			installMockFetch([{ status: 500 }]);
 			const req = new IncomingRequest('http://example.com/v1/chat/completions', {
@@ -1738,7 +1903,7 @@ describe('free-request-api Worker', () => {
 			expect(mock.mock.calls.length).toBe(2);
 		});
 
-		it('si todos los modelos disponibles fallan con 410, termina limpiamente sin bucle', async () => {
+		it('si todos los modelos disponibles fallan con 410, termina limpiamente sin bucle', { timeout: 20000 }, async () => {
 			const goneBody = JSON.stringify({ error: { message: 'end of life' } });
 			const { calls } = installMockFetch(Array(20).fill({ status: 410, body: goneBody }));
 			const req = new IncomingRequest('http://example.com/v1/chat/completions', {

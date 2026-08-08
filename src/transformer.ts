@@ -50,7 +50,11 @@ export function buildUpstreamRequest(
 	if (incoming.tool_choice) body.tool_choice = incoming.tool_choice;
 
 	const isCerebrasGPTOSS = model.id === 'gpt-oss-120b' && model.provider === 'cerebras';
-	if (isCerebrasGPTOSS) {
+	const isGemini36Flash = model.id === 'gemini-3.6-flash';
+	const isGeminiFlashLite = model.id === 'gemini-3.5-flash-lite';
+	// Modelos que requieren reasoning_effort para evitar razonamiento excesivo.
+	// El valor del cliente SIEMPRE tiene prioridad sobre el default "low".
+	if (isCerebrasGPTOSS || isGemini36Flash || isGeminiFlashLite) {
 		body.reasoning_effort = incoming.reasoning_effort ?? 'low';
 	}
 

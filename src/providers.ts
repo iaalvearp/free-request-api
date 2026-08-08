@@ -9,6 +9,29 @@ export const MODEL_POOL: ModelEntry[] = [
 	{ id: 'llama-3.3-70b-versatile', weight: 3, provider: 'groq', envKey: 'GROQ_API_KEY', contextWindow: 131_072 },
 	{ id: 'gpt-oss-120b', weight: 3, provider: 'cerebras', envKey: 'CEREBRAS_API_KEY', contextWindow: 131_072 },
 	{ id: 'openai/gpt-oss-120b', weight: 2, provider: 'groq', envKey: 'GROQ_API_KEY', contextWindow: 131_072 },
+	{ id: 'deepseek-ai/deepseek-v4-flash-0731', weight: 5, provider: 'nvidia', envKey: 'NVIDIA_API_KEY', contextWindow: 1_000_000 },
+	{ id: 'nvidia/nemotron-3-ultra-550b-a55b', weight: 2, provider: 'nvidia', envKey: 'NVIDIA_API_KEY', contextWindow: 1_000_000 },
+	{ id: 'gemini-3.6-flash', weight: 5, provider: 'gemini', envKey: 'GOOGLE_API_KEY', contextWindow: 1_048_576 },
+	{ id: 'gemini-3.5-flash-lite', weight: 8, provider: 'gemini', envKey: 'GOOGLE_API_KEY', contextWindow: 1_048_576 },
+];
+
+// Orden explícito de failover por ruta (allowlist): solo entran los modelos listados,
+// en el orden indicado. Nano y Flash-Lite NO pertenecen a alpes-agent.
+const AGENT_ORDER: string[] = [
+	'deepseek-ai/deepseek-v4-flash-0731',
+	'gemini-3.6-flash',
+	'nvidia/nemotron-3-super-120b-a12b',
+	'gemini-2.5-flash',
+	'nvidia/nemotron-3-ultra-550b-a55b',
+	'z-ai/glm-5.2',
+];
+
+const SMALL_ORDER: string[] = [
+	'nvidia/nemotron-3-nano-30b-a3b',
+	'gemini-3.5-flash-lite',
+	'gpt-oss-120b',
+	'llama-3.3-70b-versatile',
+	'openai/gpt-oss-120b',
 ];
 
 export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
@@ -43,8 +66,17 @@ export function isAltKeyConfigured(provider: ProviderName, env: Env, altKeys: st
 }
 
 export const ROUTE_WEIGHTS: Partial<Record<VirtualRoute, Record<string, number>>> = {
+	'alpes-agent': {
+		'deepseek-ai/deepseek-v4-flash-0731': 5,
+		'gemini-3.6-flash': 5,
+		'nvidia/nemotron-3-super-120b-a12b': 3,
+		'gemini-2.5-flash': 3,
+		'nvidia/nemotron-3-ultra-550b-a55b': 2,
+		'z-ai/glm-5.2': 1,
+	},
 	'alpes-small': {
 		'nvidia/nemotron-3-nano-30b-a3b': 10,
+		'gemini-3.5-flash-lite': 8,
 		'gpt-oss-120b': 3,
 		'llama-3.3-70b-versatile': 1,
 		'openai/gpt-oss-120b': 1,
@@ -54,18 +86,13 @@ export const ROUTE_WEIGHTS: Partial<Record<VirtualRoute, Record<string, number>>
 export function filterModelsByRoute(models: ModelEntry[], route: VirtualRoute): ModelEntry[] {
 	switch (route) {
 		case 'alpes-agent':
-			return models.filter((m) => m.contextWindow >= 1_000_000 && m.id !== 'nvidia/nemotron-3-nano-30b-a3b');
-		case 'alpes-small': {
-			const smallOrder: string[] = [
-				'nvidia/nemotron-3-nano-30b-a3b',
-				'gpt-oss-120b',
-				'llama-3.3-70b-versatile',
-				'openai/gpt-oss-120b',
-			];
-			return smallOrder
+			return AGENT_ORDER
 				.map((id) => models.find((m) => m.id === id))
 				.filter((m): m is ModelEntry => m !== undefined);
-		}
+		case 'alpes-small':
+			return SMALL_ORDER
+				.map((id) => models.find((m) => m.id === id))
+				.filter((m): m is ModelEntry => m !== undefined);
 		case 'alpes-auto':
 		default:
 			return [...models];

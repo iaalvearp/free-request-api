@@ -6,7 +6,7 @@
 src/
 ├── index.ts        → handler principal: auth, OpenCode detection, failover, routing
 ├── types.ts        → Env, ModelEntry, ProviderName, IncomingRequest
-├── providers.ts    → MODEL_POOL (7 modelos con pesos), PROVIDERS map (URLs), ALT_KEYS
+├── providers.ts    → MODEL_POOL (11 modelos con pesos), PROVIDERS map (URLs), ALT_KEYS, AGENT_ORDER/SMALL_ORDER
 ├── selector.ts     → weighted random, throttle (1 req/s por provider), health tracking por modelo (in-isolate)
 ├── transformer.ts  → construye upstream Request OpenAI-compatible, wrappea Response con headers
 ├── stats.ts        → contador diario KV (100k/día Cloudflare)
@@ -22,6 +22,10 @@ src/
 { id: "llama-3.3-70b-versatile",   weight: 3, provider: "groq",     envKey: "GROQ_API_KEY",       contextWindow: 131_072 }
 { id: "gpt-oss-120b",              weight: 3, provider: "cerebras", envKey: "CEREBRAS_API_KEY",   contextWindow: 131_072 }
 { id: "openai/gpt-oss-120b",       weight: 2, provider: "groq",     envKey: "GROQ_API_KEY",       contextWindow: 131_072 }
+{ id: "deepseek-ai/deepseek-v4-flash-0731",  weight: 5, provider: "nvidia",   envKey: "NVIDIA_API_KEY",     contextWindow: 1_000_000 }
+{ id: "nvidia/nemotron-3-ultra-550b-a55b",   weight: 2, provider: "nvidia",   envKey: "NVIDIA_API_KEY",     contextWindow: 1_000_000 }
+{ id: "gemini-3.6-flash",          weight: 5, provider: "gemini",   envKey: "GOOGLE_API_KEY",     contextWindow: 1_048_576 }
+{ id: "gemini-3.5-flash-lite",     weight: 8, provider: "gemini",   envKey: "GOOGLE_API_KEY",     contextWindow: 1_048_576 }
 ```
 
 ## URLs upstream
@@ -41,17 +45,25 @@ Todos usan `Authorization: Bearer <key>` (formato OpenAI). Sin transformación d
 - OpenCode lock: si OpenCode + model en body → ese modelo exacto, sin rotación
 
 ### alpes-agent
-- Solo modelos con contextWindow >= 1_000_000
+- Allowlist explícita (`AGENT_ORDER`) con orden de failover y pesos (`ROUTE_WEIGHTS['alpes-agent']`):
+  deepseek-v4-flash-0731 (5) → gemini-3.6-flash (5) → nemotron-super (3) → gemini-2.5-flash (3) → nemotron-ultra (2) → z-ai/glm-5.2 (1)
+- Solo entran los modelos listados: Nano y Flash-Lite NO pertenecen a alpes-agent (aunque Flash-Lite tenga 1M de contexto)
 - Debe soportar tool_calls y mensajes multi-turno
-- Candidatos: gemini-2.5-flash, z-ai/glm-5.2, nvidia/nemotron-3-super-120b-a12b
 - Context window: min(1M) = 1_000_000
 - Nunca se envía upstream como nombre real
 
 ### alpes-small
-- Modelos rápidos con contextWindow ≤ 131_072
+- Allowlist explícita (`SMALL_ORDER`) con orden de failover y pesos (`ROUTE_WEIGHTS['alpes-small']`):
+  nano (10) → gemini-3.5-flash-lite (8) → gpt-oss-120b (3) → llama-3.3-70b-versatile (1) → openai/gpt-oss-120b (1)
 - Para títulos, resúmenes, clasificación, tareas internas
-- Evita NVIDIA mientras exista ResourceExhausted recurrente
 - Context window: 131_072
+
+## reasoning_effort
+
+- Se envía `incoming.reasoning_effort ?? 'low'` a: `gemini-3.6-flash`, `gemini-3.5-flash-lite` y `gpt-oss-120b` (Cerebras).
+- El valor del cliente SIEMPRE tiene prioridad sobre el default `low`.
+- No se envía a otros modelos/proveedores (NVIDIA, Groq, Gemini 2.5 Flash).
+- Sin `reasoning_effort` explícito, Gemini 3.6 Flash razona en exceso (truncamiento y latencia alta).
 
 ## Health tracking
 
@@ -76,8 +88,8 @@ Todos usan `Authorization: Bearer <key>` (formato OpenAI). Sin transformación d
 ## NVIDIA Integration Notes
 
 - Una sola `NVIDIA_API_KEY` permite seleccionar distintos modelos NVIDIA.
-- GLM 5.2 y Nemotron 3 se consumen mediante NVIDIA.
-- DeepSeek V4 Flash (NVIDIA) fue retirado (end of life): NVIDIA responde HTTP 410 Gone, el proxy hace failover y lo marca como no disponible en el isolate.
+- GLM 5.2, Nemotron 3 (Super/Nano/Ultra) y DeepSeek V4 Flash se consumen mediante NVIDIA.
+- DeepSeek V4 Flash (`deepseek-ai/deepseek-v4-flash-0731`) está verificado y activo (chat, tools y stream OK). El modelo sin sufijo `-0731` sí fue retirado (410 Gone): el proxy hace failover y lo marca como no disponible en el isolate.
 - NO se utiliza `DEEPSEEK_API_KEY` ni endpoint directo `api.deepseek.com`.
 - OpenRouter fue retirado.
 - Health tracking por modelo (`provider:modelId`), throttle por proveedor.

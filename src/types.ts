@@ -16,6 +16,7 @@ export interface IncomingRequest {
 	stream?: boolean;
 	temperature?: number;
 	top_p?: number;
+	reasoning_effort?: string;
 	max_tokens?: number;
 	tools?: unknown[];
 	tool_choice?: unknown;

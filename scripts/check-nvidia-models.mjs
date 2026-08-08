@@ -84,7 +84,9 @@ async function main() {
 
   const models = [
     { id: 'z-ai/glm-5.2', purpose: 'programación compleja, depuración y sesiones largas' },
+    { id: 'deepseek-ai/deepseek-v4-flash-0731', purpose: 'agente principal, tool calls y respaldo general' },
     { id: 'nvidia/nemotron-3-super-120b-a12b', purpose: 'agente, herramientas y respaldo general' },
+    { id: 'nvidia/nemotron-3-ultra-550b-a55b', purpose: 'agente, respaldo de alta capacidad' },
     { id: 'nvidia/nemotron-3-nano-30b-a3b', purpose: 'respuestas rápidas, tareas internas, alpes-small' },
   ];
 

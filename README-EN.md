@@ -24,7 +24,7 @@ Built on **Cloudflare Workers**, it runs at the edge across 300+ global location
 - **Alert threshold** — warns at 90,000 requests/day before hitting the Cloudflare limit
 - **Stats endpoint** — query current usage anytime via `GET /stats`
 - **Zero cold-start secrets** — all API keys stored as encrypted Cloudflare secrets, never in code
-- **Virtual models** — `alpes-auto` for weighted rotation, `alpes-long` for 1M+ context models
+- **Virtual models** — `alpes-auto` for weighted rotation, `alpes-agent` for the 1M+ allowlist, `alpes-small` for fast models
 
 ---
 
@@ -61,13 +61,17 @@ Opencode / Continue / VS Code
    │  NVIDIA NIM     — GLM 5.2                │
    │                 — Nemotron 3 Super 120B  │
    │                 — Nemotron 3 Nano        │
+   │                 — Nemotron 3 Ultra 550B  │
+   │                 — DeepSeek V4 Flash      │
    │                                          │
    │  Groq           — Llama 3.3 70B          │
    │                 — GPT-OSS 120B           │
    │                                          │
    │  Google         — Gemini 2.5 Flash       │
+   │                 — Gemini 3.6 Flash       │
+   │                 — Gemini 3.5 Flash Lite  │
    │                                          │
-   │  Cerebras       — Llama 3.3 70B          │
+   │  Cerebras       — GPT-OSS 120B           │
    └──────────────────────────────────────────┘
 ```
 
@@ -224,7 +228,8 @@ Content-Type: application/json
 **Virtual Models**
 
 - `alpes-auto` — weighted rotation across all available models
-- `alpes-long` — weighted rotation across models with ≥1M token context
+- `alpes-agent` — allowlist of 1M+ models (DeepSeek V4 Flash, Gemini 3.6 Flash, Nemotron Super, Gemini 2.5 Flash, Nemotron Ultra, GLM 5.2) with explicit failover order and weights
+- `alpes-small` — fast models (Nemotron Nano, Gemini 3.5 Flash Lite, Cerebras GPT-OSS, Groq) with explicit failover order and weights
 
 **Response** — standard OpenAI `chat.completion` object with additional headers:
 - `X-Model-Used` — actual model that responded
@@ -304,18 +309,19 @@ All providers used are free-tier with no credit card required.
 
 | Provider | Models | RPM | RPD | Notes |
 |----------|--------|-----|-----|-------|
-| NVIDIA NIM | GLM 5.2, Nemotron 3 Super 120B, Nemotron 3 Nano | ~40 | unlimited | Phone verification required |
+| NVIDIA NIM | GLM 5.2, Nemotron 3 Super 120B, Nemotron 3 Nano, Nemotron 3 Ultra 550B, DeepSeek V4 Flash | ~40 | unlimited | Phone verification required |
 | Groq | Llama 3.3 70B, GPT-OSS 120B | 30 | 1,000/model | Fastest inference (LPU hardware) |
-| Google AI Studio | Gemini 2.5 Flash | 15 | 1,500 | 1M token context window |
-| Cerebras | Llama 3.3 70B | 2 | unlimited | Ultra-fast inference |
+| Google AI Studio | Gemini 2.5 Flash, Gemini 3.6 Flash, Gemini 3.5 Flash Lite | 15 | 1,500 | 1M token context window |
+| Cerebras | GPT-OSS 120B | 2 | unlimited | Ultra-fast inference |
 
 **Important Notes:**
 - A single `NVIDIA_API_KEY` enables multiple NVIDIA models
-- DeepSeek V4 Flash (NVIDIA) reached its end of life and was removed from the pool (upstream responds HTTP 410 Gone)
+- DeepSeek V4 Flash (`deepseek-ai/deepseek-v4-flash-0731`) is active and verified. The older model without the `-0731` suffix reached its end of life (upstream responds HTTP 410 Gone)
 - `DEEPSEEK_API_KEY` is NOT used; direct DeepSeek endpoint is removed
 - OpenRouter has been removed
 - NVIDIA free endpoints are for development/testing, not production
 - Health tracking is per-model (`provider:modelId`); throttle is per-provider
+- `reasoning_effort` is sent as `incoming.reasoning_effort ?? 'low'` for Gemini 3.6 Flash, Gemini 3.5 Flash Lite and Cerebras GPT-OSS; the client's value always wins
 
 ---
 

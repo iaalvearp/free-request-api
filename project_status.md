@@ -8,7 +8,7 @@
 
 ## 1. Resumen Ejecutivo
 
-**free-request-api** es un **proxy OpenAI-compatible** (`/v1/chat/completions`) desplegado como **Cloudflare Worker** que rota inteligentemente entre **4 proveedores de IA** (Gemini, NVIDIA, Groq, Cerebras) con **6 modelos** en pool ponderado. Incluye:
+**free-request-api** es un **proxy OpenAI-compatible** (`/v1/chat/completions`) desplegado como **Cloudflare Worker** que rota inteligentemente entre **4 proveedores de IA** (Gemini, NVIDIA, Groq, Cerebras) con **11 modelos** en pool ponderado. Incluye:
 
 - **Failover automático** ante 429/503/timeout/error 400 contexto/410 Gone
 - **Detección de OpenCode** → lock de modelo exacto si envía `model` + User-Agent
@@ -16,7 +16,7 @@
 - **Health tracking por modelo** (`provider:modelId`) en isolate
 - **Stats diarias en KV** (límite 100k req/día CF Free)
 - **CORS + Headers de respuesta** con trazabilidad completa (`X-Model-Used`, `X-Fallback-Count`, etc.)
-- **Modelos virtuales**: `alpes-auto` (rotación ponderada), `alpes-long` (solo modelos ≥1M ctx)
+- **Modelos virtuales**: `alpes-auto` (pool completo ponderado), `alpes-agent` (allowlist 1M+), `alpes-small` (rápidos ≤131K)
 - **Endpoints:** `POST /v1/chat/completions`, `GET /health`, `GET /stats`, `OPTIONS` CORS
 
 ---
@@ -28,7 +28,7 @@ free-request-api/
 ├── src/
 │   ├── index.ts        → Handler principal (auth, OpenCode detection, failover, routing, virtual models)
 │   ├── types.ts        → Types: Env, ModelEntry, ProviderName, IncomingRequest, ChatMessage
-│   ├── providers.ts    → MODEL_POOL (6 modelos), PROVIDERS (URLs), ALT_KEYS, getAvailableModels
+│   ├── providers.ts    → MODEL_POOL (11 modelos), PROVIDERS (URLs), ALT_KEYS, AGENT_ORDER/SMALL_ORDER, ROUTE_WEIGHTS, getAvailableModels
 │   ├── selector.ts     → Weighted random, throttle 1/s, health tracking por modelo (Map in-isolate)
 │   ├── transformer.ts  → buildUpstreamRequest, buildProxyResponse (headers OpenAI)
 │   ├── stats.ts        → KV daily counter (100k/día CF), getTodayStats
@@ -53,7 +53,7 @@ free-request-api/
 ### `src/types.ts` (50 líneas)
 ```typescript
 ChatMessage { role: 'user'|'assistant'|'system', content: string }
-IncomingRequest { model?, messages[], stream?, temperature?, max_tokens?, tools?, tool_choice?, ... }
+IncomingRequest { model?, messages[], stream?, temperature?, top_p?, reasoning_effort?, max_tokens?, tools?, tool_choice?, ... }
 ProviderName = 'gemini' | 'nvidia' | 'groq' | 'cerebras'        // ← ACTUALIZADO: agregado nvidia, removido deepseek
 ModelEntry { id, weight, provider, envKey, contextWindow }
 ProviderConfig { url }
@@ -61,16 +61,25 @@ ProviderHealth { lastSuccess, last429, lastError, successCount, failureCount, co
 Env { CUSTOM_API_KEY, ENVIRONMENT, GOOGLE_API_KEY, NVIDIA_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, PROXY_STATS: KVNamespace }
 ```
 
-### `src/providers.ts` (41 líneas)
+### `src/providers.ts` (95 líneas)
 ```typescript
 MODEL_POOL = [
   { id: 'gemini-2.5-flash',          weight: 4, provider: 'gemini',   envKey: 'GOOGLE_API_KEY',     contextWindow: 1_048_576 },
   { id: 'z-ai/glm-5.2',              weight: 4, provider: 'nvidia',   envKey: 'NVIDIA_API_KEY',     contextWindow: 1_000_000 },
   { id: 'nvidia/nemotron-3-super-120b-a12b', weight: 3, provider: 'nvidia',   envKey: 'NVIDIA_API_KEY',     contextWindow: 1_000_000 },
+  { id: 'nvidia/nemotron-3-nano-30b-a3b',   weight: 3, provider: 'nvidia',   envKey: 'NVIDIA_API_KEY',     contextWindow: 1_000_000 },
   { id: 'llama-3.3-70b-versatile',   weight: 3, provider: 'groq',     envKey: 'GROQ_API_KEY',       contextWindow: 131_072 },
   { id: 'gpt-oss-120b',              weight: 3, provider: 'cerebras',  envKey: 'CEREBRAS_API_KEY',   contextWindow: 131_072 },
   { id: 'openai/gpt-oss-120b',       weight: 2, provider: 'groq',     envKey: 'GROQ_API_KEY',       contextWindow: 131_072 },
+  { id: 'deepseek-ai/deepseek-v4-flash-0731', weight: 5, provider: 'nvidia', envKey: 'NVIDIA_API_KEY', contextWindow: 1_000_000 },
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b',  weight: 2, provider: 'nvidia', envKey: 'NVIDIA_API_KEY', contextWindow: 1_000_000 },
+  { id: 'gemini-3.6-flash',          weight: 5, provider: 'gemini',   envKey: 'GOOGLE_API_KEY',     contextWindow: 1_048_576 },
+  { id: 'gemini-3.5-flash-lite',     weight: 8, provider: 'gemini',   envKey: 'GOOGLE_API_KEY',     contextWindow: 1_048_576 },
 ]
+
+// AGENT_ORDER (allowlist failover alpes-agent): deepseek-v4-flash-0731 → gemini-3.6-flash → nemotron-super → gemini-2.5-flash → nemotron-ultra → z-ai/glm-5.2
+// SMALL_ORDER (allowlist failover alpes-small): nano → gemini-3.5-flash-lite → gpt-oss-120b → llama-3.3-70b-versatile → openai/gpt-oss-120b
+// ROUTE_WEIGHTS: alpes-agent = 5/5/3/3/2/1, alpes-small = 10/8/3/1/1 (alpes-auto usa pesos de MODEL_POOL)
 
 PROVIDERS = {
   gemini:   { url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions' },
@@ -314,7 +323,8 @@ Access-Control-Allow-Headers: Content-Type, Authorization, X-OpenCode-Session
 | **OpenCode detection** | `User-Agent` incluye `opencode` OR header `X-OpenCode-Session` (index.ts:27-30) |
 | **OpenCode lock** | Si OpenCode + `model` en body → usa ESE modelo exacto, sin rotar (index.ts:148-166) |
 | **No OpenCode / sin model** | Weighted random del pool disponible (index.ts:167-170) |
-| **Modelos virtuales** | `alpes-auto` → weighted rotation; `alpes-long` → (pendiente, documentado) |
+| **Modelos virtuales** | `alpes-auto` → weighted rotation con pesos de MODEL_POOL; `alpes-agent` → allowlist 1M+ con ROUTE_WEIGHTS 5/5/3/3/2/1; `alpes-small` → allowlist ≤131K con ROUTE_WEIGHTS 10/8/3/1/1 |
+| **reasoning_effort** | `incoming.reasoning_effort ?? 'low'` para gemini-3.6-flash, gemini-3.5-flash-lite y gpt-oss-120b (cerebras); el cliente siempre gana (transformer.ts) |
 | **Context overflow** | ~4 chars/token; ≤128k ctx → threshold 50k; ≥1M ctx → threshold 800k (index.ts:37-47, 177-204) |
 | **Failover triggers** | 429, ≥500, 404, timeout 25s, 400 context/model not found, 410 Gone (index.ts:245-280) |
 | **Throttle** | 1 req/s por provider (Map timestamps en isolate) (selector.ts:56-68) |
@@ -360,7 +370,7 @@ Access-Control-Allow-Headers: Content-Type, Authorization, X-OpenCode-Session
 
 ## 8. Observaciones Técnicas / Deuda
 
-1. **Modelo virtual `alpes-long` documentado pero no implementado** — requeriría filtrar pool por `contextWindow >= 1_000_000` en selector
+1. **Modelo virtual `alpes-agent`** — allowlist explícita (`AGENT_ORDER`) y pesos propios (`ROUTE_WEIGHTS['alpes-agent']`), implementados en providers.ts. Deuda: aún por documentar en este status (ver AGENTS.md / agent-reference.md)
 2. **Health tracking en isolate** — se pierde en cold starts / evicciones; no persistente
 3. **Throttle en isolate** — 1 req/s por isolate; con múltiples isolates CF puede superar rate limit real del proveedor
 4. **KV stats** — contador simple; no hay métricas por modelo/provider (solo total diario)
@@ -373,7 +383,7 @@ Access-Control-Allow-Headers: Content-Type, Authorization, X-OpenCode-Session
 
 ## 9. Próximos Pasos Sugeridos
 
-- [ ] Implementar `alpes-long` (filtrar pool por `contextWindow >= 1_000_000`)
+- [x] Implementar `alpes-agent` y `alpes-small` como allowlists con `ROUTE_WEIGHTS` (DeepSeek V4 Flash, Nemotron Ultra, Gemini 3.6 Flash, Gemini 3.5 Flash Lite)
 - [ ] Migrar health/throttle a Durable Object o KV para persistencia cross-isolate
 - [ ] Añadir métricas por modelo/provider en KV (requests, errors, latency p50/p99)
 - [ ] Implementar streaming real con `ReadableStream` + `TransformStream`
@@ -390,7 +400,7 @@ Access-Control-Allow-Headers: Content-Type, Authorization, X-OpenCode-Session
 |---------|--------|-----------------|
 | `src/index.ts` | 373 | Handler HTTP, auth, routing, failover loop, OpenCode lock, virtual models |
 | `src/types.ts` | 50 | Interfaces TypeScript centrales |
-| `src/providers.ts` | 41 | Pool modelos, URLs providers, claves alternativas |
+| `src/providers.ts` | 95 | Pool modelos, URLs providers, AGENT_ORDER/SMALL_ORDER, ROUTE_WEIGHTS, claves alternativas |
 | `src/selector.ts` | 98 | Selección ponderada, throttle, health tracking por modelo |
 | `src/transformer.ts` | 61 | Request/Response building + headers trazabilidad |
 | `src/stats.ts` | 72 | Contador diario KV + alertas |

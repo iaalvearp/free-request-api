@@ -76,6 +76,30 @@ curl -X POST http://localhost:8787/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hola"}],"model":"alpes-auto"}'
 ```
 
+### Modelo virtual `alpes-agent`
+
+Allowlist 1M+ con orden de failover y pesos explícitos: `deepseek-v4-flash-0731` (5) → `gemini-3.6-flash` (5) → `nemotron-super` (3) → `gemini-2.5-flash` (3) → `nemotron-ultra` (2) → `z-ai/glm-5.2` (1). Nano y Flash-Lite NO entran.
+
+```bash
+curl -X POST http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer $CUSTOM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hola"}],"model":"alpes-agent"}'
+```
+
+### Modelo virtual `alpes-small`
+
+Allowlist de modelos rápidos con orden de failover y pesos explícitos: `nano` (10) → `gemini-3.5-flash-lite` (8) → `gpt-oss-120b` (3) → `llama-3.3-70b-versatile` (1) → `openai/gpt-oss-120b` (1).
+
+```bash
+curl -X POST http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer $CUSTOM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hola"}],"model":"alpes-small"}'
+```
+
+`reasoning_effort` se envía como `incoming.reasoning_effort ?? 'low'` a `gemini-3.6-flash`, `gemini-3.5-flash-lite` y `gpt-oss-120b` (Cerebras); el valor del cliente siempre gana.
+
 ### `GET /health`
 
 Estado de cada modelo (último éxito, 429s, cooldown):
@@ -108,9 +132,14 @@ curl -H "Authorization: Bearer $CUSTOM_API_KEY" http://localhost:8787/stats
 | `gemini-2.5-flash` | 4 | gemini |
 | `z-ai/glm-5.2` | 4 | nvidia |
 | `nvidia/nemotron-3-super-120b-a12b` | 3 | nvidia |
+| `nvidia/nemotron-3-nano-30b-a3b` | 3 | nvidia |
 | `llama-3.3-70b-versatile` | 3 | groq |
 | `gpt-oss-120b` (Cerebras) | 3 | cerebras |
 | `openai/gpt-oss-120b` | 2 | groq |
+| `deepseek-ai/deepseek-v4-flash-0731` | 5 | nvidia |
+| `nvidia/nemotron-3-ultra-550b-a55b` | 2 | nvidia |
+| `gemini-3.6-flash` | 5 | gemini |
+| `gemini-3.5-flash-lite` | 8 | gemini |
 
 ## Logging
 
